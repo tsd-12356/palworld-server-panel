@@ -91,6 +91,9 @@ STEAMCMD=${STEAMCMD_DIR}/steamcmd.sh
 PALWORLD_APP_ID=2394010
 PALWORLD_DEPOT_ID=2394012
 AUTO_UPDATE_ENABLED=false
+MOD_LIBRARY_ROOT=${PANEL_DIR}/mod-library
+MOD_UPLOAD_MAX_BYTES=1073741824
+PALWORLD_MOD_MODE=pak-safe
 PANEL_INSTALL_SCRIPT=${PANEL_DIR}/panel_install.py
 PANEL_UPDATE_SCRIPT=${PANEL_DIR}/panel_update.py
 PANEL_ASSET_VERSION=$(date +%s)
@@ -101,6 +104,9 @@ else
   grep -q '^PANEL_DIR=' /etc/palworld-panel.env || echo "PANEL_DIR=${PANEL_DIR}" >>/etc/palworld-panel.env
   grep -q '^PALWORLD_DIR=' /etc/palworld-panel.env || echo "PALWORLD_DIR=${PALWORLD_DIR}" >>/etc/palworld-panel.env
   grep -q '^PALWORLD_BACKEND=' /etc/palworld-panel.env || echo "PALWORLD_BACKEND=systemd" >>/etc/palworld-panel.env
+  grep -q '^MOD_LIBRARY_ROOT=' /etc/palworld-panel.env || echo "MOD_LIBRARY_ROOT=${PANEL_DIR}/mod-library" >>/etc/palworld-panel.env
+  grep -q '^MOD_UPLOAD_MAX_BYTES=' /etc/palworld-panel.env || echo "MOD_UPLOAD_MAX_BYTES=1073741824" >>/etc/palworld-panel.env
+  grep -q '^PALWORLD_MOD_MODE=' /etc/palworld-panel.env || echo "PALWORLD_MOD_MODE=pak-safe" >>/etc/palworld-panel.env
   grep -q '^STEAMCMD=' /etc/palworld-panel.env || echo "STEAMCMD=${STEAMCMD_DIR}/steamcmd.sh" >>/etc/palworld-panel.env
   grep -q '^PANEL_ASSET_VERSION=' /etc/palworld-panel.env && sed -i "s/^PANEL_ASSET_VERSION=.*/PANEL_ASSET_VERSION=$(date +%s)/" /etc/palworld-panel.env || echo "PANEL_ASSET_VERSION=$(date +%s)" >>/etc/palworld-panel.env
 fi

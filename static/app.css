@@ -196,16 +196,16 @@ button {
     border-color: var(--glass-blue-border);
 }
 
-:where(.topbar, .panel, .hero-panel, .metric-card, .system-card, .trend-card, .config-group, .save-current-card, .save-slot-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs) {
+:where(.topbar, .panel, .hero-panel, .metric-card, .system-card, .trend-card, .config-group, .save-current-card, .save-slot-card, .mod-card, .mod-status-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs) {
     transform-style: preserve-3d;
 }
 
-:where(.topbar, .panel, .hero-panel, .system-card, .trend-card, .config-group, .save-current-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs),
+:where(.topbar, .panel, .hero-panel, .system-card, .trend-card, .config-group, .save-current-card, .mod-card, .mod-status-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs),
 .save-slot-card:not(.is-active) {
     position: relative;
 }
 
-:where(.topbar, .hero-panel, .system-card, .trend-card, .config-group, .save-current-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs).is-pointer-hot::after,
+:where(.topbar, .hero-panel, .system-card, .trend-card, .config-group, .save-current-card, .mod-card, .mod-status-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs).is-pointer-hot::after,
 .save-slot-card:not(.is-active).is-pointer-hot::after {
     content: "";
     position: absolute;
@@ -220,12 +220,12 @@ button {
     transition: opacity 180ms ease;
 }
 
-:where(.topbar, .hero-panel, .system-card, .trend-card, .config-group, .save-current-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs).is-pointer-hot::after,
+:where(.topbar, .hero-panel, .system-card, .trend-card, .config-group, .save-current-card, .mod-card, .mod-status-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs).is-pointer-hot::after,
 .save-slot-card:not(.is-active).is-pointer-hot::after {
     opacity: 0.72;
 }
 
-:where(.system-card, .trend-card, .config-group, .save-current-card, .save-slot-card, .audit-item, .update-card, .update-step, .install-card, .install-check).is-pointer-hot {
+:where(.system-card, .trend-card, .config-group, .save-current-card, .save-slot-card, .mod-card, .mod-status-card, .audit-item, .update-card, .update-step, .install-card, .install-check).is-pointer-hot {
     transform: translateY(-3px);
     border-color: rgba(154, 190, 255, 0.60);
     box-shadow: var(--lux-shadow);
@@ -658,7 +658,7 @@ main {
 }
 
 .metric-card > *,
-:where(.topbar, .hero-panel, .system-card, .trend-card, .config-group, .save-current-card, .save-slot-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs).is-pointer-hot > * {
+:where(.topbar, .hero-panel, .system-card, .trend-card, .config-group, .save-current-card, .save-slot-card, .mod-card, .mod-status-card, .audit-item, .update-card, .update-step, .install-card, .install-check, .modal-card, .toast, .log-box, .console-output, .tabs).is-pointer-hot > * {
     position: relative;
     z-index: 1;
 }
@@ -1244,6 +1244,140 @@ tr:last-child td {
 }
 
 .save-empty {
+    padding: 24px;
+    background: rgba(248, 251, 255, 0.66);
+    border: 1px dashed var(--line-strong);
+    border-radius: 16px;
+    text-align: center;
+}
+
+.mod-status-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+    gap: 12px;
+    margin: 14px 0;
+}
+
+.mod-status-card,
+.mod-card {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+    background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(247, 251, 255, 0.38));
+    box-shadow: 0 14px 40px rgba(36, 48, 72, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    -webkit-backdrop-filter: blur(22px) saturate(1.24);
+    backdrop-filter: blur(22px) saturate(1.24);
+}
+
+.mod-status-card {
+    min-width: 0;
+    padding: 15px;
+    border-radius: 18px;
+}
+
+.mod-status-card span,
+.mod-status-card small {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 760;
+}
+
+.mod-status-card strong {
+    display: block;
+    margin: 8px 0 4px;
+    overflow-wrap: anywhere;
+    color: var(--text);
+    font-size: 22px;
+    line-height: 1.12;
+}
+
+.mod-warning {
+    margin: 12px 0 14px;
+    padding: 12px 14px;
+    color: var(--amber);
+    background: rgba(255, 243, 223, 0.64);
+    border: 1px solid rgba(185, 107, 0, 0.18);
+    border-radius: 15px;
+    font-size: 13px;
+    font-weight: 760;
+    line-height: 1.55;
+}
+
+.mod-list {
+    display: grid;
+    gap: 12px;
+}
+
+.mod-card {
+    display: grid;
+    gap: 13px;
+    padding: 16px;
+    border-radius: 18px;
+    transition: transform 190ms ease, box-shadow 190ms ease, border-color 190ms ease, background 190ms ease;
+}
+
+.mod-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(47, 111, 237, 0.20);
+    box-shadow: var(--shadow);
+}
+
+.mod-card.is-enabled {
+    border-color: rgba(21, 127, 92, 0.28);
+    background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.64), rgba(236, 255, 248, 0.40)),
+        radial-gradient(circle at 100% 0%, rgba(21, 127, 92, 0.14), transparent 18rem);
+}
+
+.mod-card.is-official {
+    border-color: rgba(185, 107, 0, 0.22);
+}
+
+.mod-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.mod-card h3 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.mod-card .muted {
+    margin: 6px 0 0;
+    overflow-wrap: anywhere;
+}
+
+.mod-meta {
+    margin-top: 0;
+}
+
+.mod-compat {
+    margin: 0;
+    padding: 10px 12px;
+    color: var(--blue);
+    background: rgba(234, 242, 255, 0.58);
+    border: 1px solid rgba(47, 111, 237, 0.14);
+    border-radius: 14px;
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.mod-compat.is-warning {
+    color: var(--amber);
+    background: rgba(255, 243, 223, 0.62);
+    border-color: rgba(185, 107, 0, 0.18);
+}
+
+.mod-actions {
+    justify-content: flex-end;
+}
+
+.mod-empty {
     padding: 24px;
     background: rgba(248, 251, 255, 0.66);
     border: 1px dashed var(--line-strong);
@@ -2185,6 +2319,7 @@ tr:last-child td {
     .trend-grid,
     .update-grid,
     .install-grid,
+    .mod-status-grid,
     .update-steps,
     .form-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2223,6 +2358,7 @@ tr:last-child td {
     .trend-grid,
     .update-grid,
     .install-grid,
+    .mod-status-grid,
     .update-steps,
     .form-grid {
         grid-template-columns: 1fr;
@@ -2244,6 +2380,8 @@ tr:last-child td {
     .diff-values,
     .save-slot-head,
     .save-slot-actions,
+    .mod-card-head,
+    .mod-actions,
     .audit-toolbar,
     .audit-item-head {
         align-items: stretch;

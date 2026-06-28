@@ -22,6 +22,10 @@ const state = {
     updateLoading: false,
     installStatus: null,
     installLoading: false,
+    modStatus: null,
+    mods: [],
+    modLoading: false,
+    modBusy: false,
 };
 
 const particles = {
@@ -56,6 +60,8 @@ const glowSelector = [
     ".config-group",
     ".save-current-card",
     ".save-slot-card",
+    ".mod-card",
+    ".mod-status-card",
     ".audit-item",
     ".update-card",
     ".update-step",
@@ -253,7 +259,7 @@ function setMessage(el, text, type = "") {
     if (!el) return;
     el.textContent = text;
     el.className = `message ${type ? `is-${type}` : ""}`.trim();
-    if (el.id === "configMsg" || el.id === "saveMsg") el.classList.add("panel-message");
+    if (["configMsg", "saveMsg", "modMsg", "updateMsg", "installMsg", "auditMsg"].includes(el.id)) el.classList.add("panel-message");
 }
 
 function showToast(message, type = "info") {
@@ -718,6 +724,7 @@ function switchTab(tab) {
     if (tab === "config") loadConfig();
     if (tab === "log") loadLog();
     if (tab === "saves") loadSaves();
+    if (tab === "mods") loadMods();
     if (tab === "update") loadUpdateStatus();
     if (tab === "install") loadInstallStatus();
     if (tab === "audit") loadAudit();
@@ -952,6 +959,9 @@ async function refreshAll() {
     if (state.currentTab === "saves") {
         loadSaves(false);
     }
+    if (state.currentTab === "mods") {
+        loadMods(false);
+    }
     if (state.currentTab === "update") {
         loadUpdateStatus(false);
     }
@@ -1043,6 +1053,12 @@ const auditActionLabels = {
     "saves.upload_slot": "上传存档",
     "saves.switch": "切换存档",
     "saves.delete_slot": "删除存档",
+    "mods.upload": "上传 MOD",
+    "mods.enable": "启用 MOD",
+    "mods.disable": "禁用 MOD",
+    "mods.delete": "删除 MOD",
+    "mods.empty_trash": "清理 MOD 废纸篓",
+    "mods.apply_restart": "应用 MOD 并重启",
 };
 
 Object.assign(auditActionLabels, {
@@ -1068,6 +1084,8 @@ function auditDetails(record) {
     if (record.command) details.push(`命令：${record.command}`);
     if (Array.isArray(record.changed_keys) && record.changed_keys.length) details.push(`配置项：${record.changed_keys.join(", ")}`);
     if (record.slot_id) details.push(`存档槽：${record.slot_id}`);
+    if (record.mod_id) details.push(`MOD：${record.mod_id}`);
+    if (record.mod_type) details.push(`类型：${record.mod_type}`);
     if (record.backup_id) details.push(`备份：${record.backup_id}`);
     if (record.filename) details.push(`文件：${record.filename}`);
     if (record.source_path) details.push(`来源：${record.source_path}`);
@@ -1529,6 +1547,320 @@ async function pollInstallProgress() {
         }
     }
     finishProgressDialog("安装任务仍在后台运行，请稍后查看安装日志", "warn");
+}
+
+function modTypeLabel(type) {
+    if (type === "official") return "官方 Info.json";
+    if (type === "sig") return "签名文件";
+    return "PAK";
+}
+
+function setModControlsBusy(isBusy) {
+    state.modBusy = isBusy;
+    const panel = $("#tab-mods .panel");
+    if (panel) panel.classList.toggle("is-working", isBusy);
+    ["#refreshModsBtn", "#uploadModBtn", "#applyModsRestartBtn", "#emptyModTrashBtn"].forEach((selector) => {
+        const button = $(selector);
+        if (!button) return;
+        button.disabled = isBusy;
+        button.classList.toggle("is-busy", isBusy);
+    });
+    $$("#modList button").forEach((button) => {
+        button.disabled = isBusy;
+        button.classList.toggle("is-busy", isBusy);
+    });
+}
+
+function renderModStatus() {
+    const status = state.modStatus || {};
+    $("#modBackend").textContent = status.backend || "-";
+    $("#modMode").textContent = status.mode || "-";
+    $("#modCount").textContent = String(status.mods_count ?? state.mods.length ?? 0);
+    $("#modEnabledCount").textContent = `已启用 ${status.enabled_count ?? state.mods.filter((mod) => mod.enabled).length} 个`;
+    $("#modPakDir").textContent = status.pak_enabled_dir || "-";
+    const warning = $("#modWarning");
+    if (warning) {
+        warning.textContent = status.warning || "PAK MOD 通常需要客户端也安装同款 MOD；启用、禁用、删除后需要重启服务器。";
+    }
+    const applyButton = $("#applyModsRestartBtn");
+    if (applyButton) {
+        applyButton.disabled = state.modBusy || !state.mods.length;
+        applyButton.title = state.mods.length ? "备份当前存档并重启服务器，让 MOD 变更生效" : "暂无 MOD 可应用";
+    }
+}
+
+function renderMods() {
+    renderModStatus();
+    const list = $("#modList");
+    if (!list) return;
+    const mods = state.mods || [];
+    if (!mods.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty mod-empty";
+        empty.textContent = "还没有导入 MOD。可以上传 .pak、.sig 或包含 Info.json 的 .zip。";
+        list.replaceChildren(empty);
+        return;
+    }
+
+    list.replaceChildren(...mods.map((mod) => {
+        const card = document.createElement("article");
+        card.className = `mod-card ${mod.enabled ? "is-enabled" : ""} ${mod.type === "official" ? "is-official" : ""}`.trim();
+
+        const head = document.createElement("div");
+        head.className = "mod-card-head";
+        const titleWrap = document.createElement("div");
+        const title = document.createElement("h3");
+        title.textContent = mod.name || mod.package_name || mod.id;
+        const subtitle = document.createElement("p");
+        subtitle.className = "muted";
+        subtitle.textContent = mod.type === "official"
+            ? `PackageName: ${mod.package_name || "-"}${mod.version ? ` · v${mod.version}` : ""}`
+            : `MOD ID: ${mod.id}`;
+        titleWrap.append(title, subtitle);
+        const badge = document.createElement("span");
+        badge.className = `soft-pill ${mod.enabled ? "is-success" : ""}`.trim();
+        badge.textContent = mod.enabled ? "已启用" : "已禁用";
+        head.append(titleWrap, badge);
+
+        const meta = document.createElement("div");
+        meta.className = "save-slot-meta mod-meta";
+        meta.append(
+            createSaveMeta("类型", modTypeLabel(mod.type)),
+            createSaveMeta("大小", formatBytes(mod.size_bytes)),
+            createSaveMeta("更新时间", formatOptional(mod.updated_at)),
+            createSaveMeta("重启", mod.needs_restart ? "需要" : "不需要")
+        );
+
+        const compatibility = document.createElement("p");
+        compatibility.className = mod.type === "official" ? "mod-compat is-warning" : "mod-compat";
+        compatibility.textContent = mod.compatibility || "启用后需要重启服务器；多数 MOD 也要求玩家客户端安装同款文件。";
+
+        const notes = document.createElement("p");
+        notes.className = "save-notes";
+        notes.textContent = mod.notes || (Array.isArray(mod.files) && mod.files.length ? mod.files.map((file) => file.name).join(", ") : "无备注");
+
+        const actions = document.createElement("div");
+        actions.className = "save-slot-actions mod-actions";
+        const toggleButton = document.createElement("button");
+        toggleButton.className = mod.enabled ? "secondary" : "primary";
+        toggleButton.type = "button";
+        toggleButton.textContent = mod.enabled ? "禁用" : "启用";
+        toggleButton.addEventListener("click", () => toggleMod(mod));
+
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "secondary danger-soft";
+        deleteButton.type = "button";
+        deleteButton.textContent = "移入废纸篓";
+        deleteButton.addEventListener("click", () => deleteMod(mod));
+        actions.append(toggleButton, deleteButton);
+
+        card.append(head, meta, compatibility, notes, actions);
+        return card;
+    }));
+}
+
+async function loadMods(showLoading = true) {
+    if (state.modLoading) return;
+    state.modLoading = true;
+    if (showLoading) setMessage($("#modMsg"), "正在读取 MOD 状态...");
+    try {
+        const [statusData, listData] = await Promise.all([
+            api("/api/mods/status"),
+            api("/api/mods/list"),
+        ]);
+        state.modStatus = statusData.status || {};
+        state.mods = listData.mods || [];
+        renderMods();
+        if (showLoading) setMessage($("#modMsg"), "MOD 信息已刷新。", "success");
+    } catch (error) {
+        setMessage($("#modMsg"), error.message, "error");
+        showToast(error.message, "error");
+    } finally {
+        state.modLoading = false;
+    }
+}
+
+async function uploadMod() {
+    if (state.modBusy) return;
+    const input = $("#modUploadInput");
+    const file = input?.files?.[0];
+    if (!file) return;
+    const lower = file.name.toLowerCase();
+    if (![".pak", ".sig", ".zip"].some((suffix) => lower.endsWith(suffix))) {
+        setMessage($("#modMsg"), "只支持上传 .pak、.sig 或 .zip MOD 文件。", "error");
+        showToast("MOD 文件格式不支持", "error");
+        input.value = "";
+        return;
+    }
+
+    const defaultName = file.name.replace(/\.(pak|sig|zip)$/i, "");
+    const values = await openDialog({
+        eyebrow: "Mod Upload",
+        title: "上传 MOD",
+        text: `已选择：${file.name}\nPAK MOD 通常需要玩家客户端也安装同款 MOD；官方 Info.json 包在 Linux/Docker 后端有兼容风险。`,
+        submitText: "上传并导入",
+        fields: [
+            { name: "name", label: "MOD 名称", required: true, value: defaultName },
+            { name: "notes", label: "备注", type: "textarea", placeholder: "可留空，例如来源、版本、是否需要客户端安装" },
+        ],
+    });
+    if (!values) {
+        input.value = "";
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("name", values.name.trim());
+    formData.append("notes", values.notes || "");
+
+    setModControlsBusy(true);
+    openProgressDialog("上传 MOD", ["选择文件", "上传", "识别类型", "刷新列表"], "面板只会移动 .pak/.sig 或 Info.json 包，不会执行 MOD 内任何脚本。");
+    setProgressStep(0, "done", file.name);
+    setProgressStep(1, "active", "正在上传...");
+    setMessage($("#modMsg"), `正在上传 ${file.name}...`);
+    try {
+        const data = await api("/api/mods/upload", { method: "POST", body: formData });
+        setProgressStep(1, "done", "上传完成");
+        setProgressStep(2, "done", `${modTypeLabel(data.mod?.type)} 已导入`);
+        setProgressStep(3, "active", "正在刷新列表...");
+        showToast(data.message || "MOD 上传完成", "success");
+        await loadMods(false);
+        setProgressStep(3, "done", "列表已刷新");
+        finishProgressDialog(data.message || "MOD 上传并导入完成", "success");
+        setMessage($("#modMsg"), data.message || "MOD 上传并导入完成，重启服务器后生效。", "success");
+    } catch (error) {
+        setProgressStep(1, "error", error.message);
+        finishProgressDialog(error.message, "error");
+        setMessage($("#modMsg"), error.message, "error");
+        showToast(error.message, "error");
+    } finally {
+        input.value = "";
+        setModControlsBusy(false);
+    }
+}
+
+async function toggleMod(mod) {
+    if (state.modBusy) return;
+    const enabling = !mod.enabled;
+    const isOfficial = mod.type === "official";
+    const confirmed = await openDialog({
+        eyebrow: "Mod Manager",
+        title: `${enabling ? "启用" : "禁用"} MOD：${mod.name || mod.id}`,
+        text: isOfficial && enabling
+            ? "官方 Info.json 服务端 MOD 目前官方标注仅 Windows dedicated server 支持。当前 Linux/Docker 后端允许受控启用，但可能无效或导致服务器异常。确认后才会写入 ActiveModList。"
+            : "启用或禁用 MOD 只会移动受管理的文件。变更需要重启 Palworld 后生效。",
+        submitText: enabling ? "确认启用" : "确认禁用",
+        danger: isOfficial && enabling,
+    });
+    if (!confirmed) return;
+
+    setModControlsBusy(true);
+    setMessage($("#modMsg"), `${enabling ? "正在启用" : "正在禁用"} MOD...`);
+    try {
+        const data = await api(enabling ? "/api/mods/enable" : "/api/mods/disable", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mod_id: mod.id, allow_official: isOfficial && enabling }),
+        });
+        setMessage($("#modMsg"), data.message || "MOD 状态已更新，重启后生效。", "success");
+        showToast(data.message || "MOD 状态已更新", "success");
+        await loadMods(false);
+    } catch (error) {
+        setMessage($("#modMsg"), error.message, "error");
+        showToast(error.message, "error");
+    } finally {
+        setModControlsBusy(false);
+    }
+}
+
+async function deleteMod(mod) {
+    if (state.modBusy) return;
+    const confirmed = await openDialog({
+        eyebrow: "Delete Mod",
+        title: `移入废纸篓：${mod.name || mod.id}`,
+        text: "文件会移动到面板 MOD 库的 trash 目录，不会直接物理删除。若 MOD 当前启用，重启服务器后才会完全生效。",
+        submitText: "确认移入废纸篓",
+        danger: true,
+    });
+    if (!confirmed) return;
+
+    setModControlsBusy(true);
+    setMessage($("#modMsg"), "正在移动 MOD 到废纸篓...");
+    try {
+        const data = await api(`/api/mods/${encodeURIComponent(mod.id)}`, { method: "DELETE" });
+        setMessage($("#modMsg"), data.message || "MOD 已移入废纸篓。", "success");
+        showToast(data.message || "MOD 已移入废纸篓", "success");
+        await loadMods(false);
+    } catch (error) {
+        setMessage($("#modMsg"), error.message, "error");
+        showToast(error.message, "error");
+    } finally {
+        setModControlsBusy(false);
+    }
+}
+
+async function emptyModTrash() {
+    if (state.modBusy) return;
+    const confirmed = await openDialog({
+        eyebrow: "Mod Trash",
+        title: "清理 MOD 废纸篓",
+        text: "这会永久删除面板 MOD 库 trash 目录中的项目。已启用和已禁用的 MOD 不会受影响。",
+        submitText: "确认清理",
+        danger: true,
+    });
+    if (!confirmed) return;
+
+    setModControlsBusy(true);
+    setMessage($("#modMsg"), "正在清理 MOD 废纸篓...");
+    try {
+        const data = await api("/api/mods/empty_trash", { method: "POST" });
+        setMessage($("#modMsg"), data.message || "MOD 废纸篓已清理。", "success");
+        showToast(data.message || "MOD 废纸篓已清理", "success");
+        await loadMods(false);
+    } catch (error) {
+        setMessage($("#modMsg"), error.message, "error");
+        showToast(error.message, "error");
+    } finally {
+        setModControlsBusy(false);
+    }
+}
+
+async function applyModsRestart() {
+    if (state.modBusy) return;
+    const confirmed = await openDialog({
+        eyebrow: "Apply Mods",
+        title: "应用 MOD 变更并重启",
+        text: "面板会先尝试备份当前存档，然后重启 Palworld，让启用、禁用或删除的 MOD 生效。",
+        submitText: "备份并重启",
+        danger: true,
+    });
+    if (!confirmed) return;
+
+    setModControlsBusy(true);
+    openProgressDialog("应用 MOD 变更", ["备份当前存档", "重启服务", "等待恢复", "刷新状态"], "如果某个 MOD 不兼容，服务器可能启动失败，请查看实时日志。");
+    setProgressStep(0, "active", "正在备份当前存档...");
+    try {
+        const data = await api("/api/mods/apply_restart", { method: "POST" });
+        const backupStep = (data.steps || []).find((step) => step.step === "backup");
+        setProgressStep(0, backupStep?.success === false ? "error" : "done", backupStep?.message || "备份步骤完成");
+        setProgressStep(1, "done", "重启命令已执行");
+        setProgressStep(2, data.running ? "done" : "error", data.running ? "服务器已恢复运行" : "未确认服务器恢复");
+        setProgressStep(3, "active", "正在刷新状态...");
+        await refreshAll();
+        await loadMods(false);
+        setProgressStep(3, "done", "状态已刷新");
+        finishProgressDialog(data.message || "MOD 变更已应用", data.success ? "success" : "error");
+        setMessage($("#modMsg"), data.message || "MOD 变更已应用。", "success");
+        showToast(data.message || "MOD 变更已应用", "success");
+    } catch (error) {
+        setProgressStep(1, "error", error.message);
+        finishProgressDialog(error.message, "error");
+        setMessage($("#modMsg"), error.message, "error");
+        showToast(error.message, "error");
+    } finally {
+        setModControlsBusy(false);
+    }
 }
 
 function toggleLogAutoRefresh() {
@@ -2305,6 +2637,13 @@ function bindEvents() {
         if (!state.saveBusy) $("#saveUploadInput").click();
     });
     $("#saveUploadInput").addEventListener("change", uploadSaveSlot);
+    $("#refreshModsBtn").addEventListener("click", () => loadMods(true));
+    $("#uploadModBtn").addEventListener("click", () => {
+        if (!state.modBusy) $("#modUploadInput").click();
+    });
+    $("#modUploadInput").addEventListener("change", uploadMod);
+    $("#applyModsRestartBtn").addEventListener("click", applyModsRestart);
+    $("#emptyModTrashBtn").addEventListener("click", emptyModTrash);
     $("#saveConfigBtn").addEventListener("click", () => saveConfig(false));
     $("#saveRestartBtn").addEventListener("click", () => saveConfig(true));
     $("#checkUpdateBtn").addEventListener("click", checkUpdateNow);

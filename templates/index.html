@@ -27,6 +27,7 @@
             <button class="tab-button" type="button" data-tab="log">实时日志</button>
             <button class="tab-button" type="button" data-tab="config">服务器配置</button>
             <button class="tab-button" type="button" data-tab="saves">存档管理</button>
+            <button class="tab-button" type="button" data-tab="mods">MOD 管理</button>
             <button class="tab-button" type="button" data-tab="rcon">RCON 控制台</button>
             <button class="tab-button" type="button" data-tab="update">更新管理</button>
             <button class="tab-button" type="button" data-tab="install">安装向导</button>
@@ -199,6 +200,44 @@
                     <div id="saveMsg" class="message panel-message" role="status" aria-live="polite"></div>
                     <div id="activeSaveCard" class="save-current-card"></div>
                     <div id="saveSlotList" class="save-slot-list"></div>
+                </div>
+            </section>
+
+            <section id="tab-mods" class="tab-panel">
+                <div class="panel mod-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="eyebrow">Mod Manager</p>
+                            <h2>MOD 管理</h2>
+                        </div>
+                        <div class="button-row">
+                            <button class="secondary" type="button" id="refreshModsBtn">刷新</button>
+                            <button class="primary" type="button" id="uploadModBtn">上传 MOD</button>
+                            <button class="primary warning" type="button" id="applyModsRestartBtn">应用并重启</button>
+                            <button class="secondary danger-soft" type="button" id="emptyModTrashBtn">清理废纸篓</button>
+                            <input class="visually-hidden" type="file" id="modUploadInput" accept=".pak,.sig,.zip,application/zip,application/x-zip-compressed">
+                        </div>
+                    </div>
+                    <div id="modMsg" class="message panel-message" role="status" aria-live="polite"></div>
+                    <div class="mod-status-grid">
+                        <article class="mod-status-card">
+                            <span>后端模式</span>
+                            <strong id="modBackend">-</strong>
+                            <small id="modMode">-</small>
+                        </article>
+                        <article class="mod-status-card">
+                            <span>MOD 数量</span>
+                            <strong id="modCount">-</strong>
+                            <small id="modEnabledCount">-</small>
+                        </article>
+                        <article class="mod-status-card is-wide">
+                            <span>PAK 启用目录</span>
+                            <strong id="modPakDir">-</strong>
+                            <small>Pal/Content/Paks/~mods</small>
+                        </article>
+                    </div>
+                    <div id="modWarning" class="mod-warning"></div>
+                    <div id="modList" class="mod-list"></div>
                 </div>
             </section>
 

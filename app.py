@@ -62,6 +62,14 @@ SAVE_IMPORT_DIR = SAVE_SLOT_ROOT / "imports"
 SAVE_LOCK_PATH = SAVE_SLOT_ROOT / ".operation.lock"
 ACTIVE_SLOT_PATH = SAVE_SLOT_ROOT / "active-slot.json"
 CHOWN = os.environ.get("CHOWN", "/usr/bin/chown")
+MOD_LIBRARY_ROOT = Path(os.environ.get("MOD_LIBRARY_ROOT", "/home/demo/palworld-panel/mod-library"))
+MOD_UPLOAD_MAX_BYTES = int(os.environ.get("MOD_UPLOAD_MAX_BYTES", str(1024 * 1024 * 1024)))
+PALWORLD_MOD_MODE = os.environ.get("PALWORLD_MOD_MODE", "pak-safe")
+MOD_PAK_DIR = PALWORLD_DIR / "Pal" / "Content" / "Paks" / "~mods"
+PAL_MODS_DIR = PALWORLD_DIR / "Pal" / "Content" / "Paks" / "Mods"
+OFFICIAL_MOD_WORKSHOP_DIR = PAL_MODS_DIR / "Workshop"
+PAL_MOD_SETTINGS = PAL_MODS_DIR / "PalModSettings.ini"
+app.config["MAX_CONTENT_LENGTH"] = max(app.config["MAX_CONTENT_LENGTH"], MOD_UPLOAD_MAX_BYTES)
 UPDATE_SCRIPT = Path(os.environ.get("PANEL_UPDATE_SCRIPT", "/home/demo/palworld-panel/panel_update.py"))
 UPDATE_STATUS = Path(os.environ.get("PANEL_UPDATE_STATUS", "/home/demo/palworld-panel/update-status.json"))
 UPDATE_LOG = Path(os.environ.get("PANEL_UPDATE_LOG", "/home/demo/palworld-panel/update.log"))
@@ -567,22 +575,42 @@ class SaveOperationBusy(RuntimeError):
 @contextmanager
 def save_operation_lock():
     ensure_save_dirs()
-    handle = SAVE_LOCK_PATH.open("w", encoding="utf-8")
+    handle = SAVE_LOCK_PATH.open("a+", encoding="utf-8")
+    locked_with = ""
     try:
-        import fcntl
+        if os.name == "nt":
+            import msvcrt
 
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise SaveOperationBusy("已有存档操作正在进行，请等待完成后再试") from exc
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                locked_with = "msvcrt"
+            except OSError as exc:
+                raise SaveOperationBusy("已有存档操作正在进行，请等待完成后再试") from exc
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked_with = "fcntl"
+            except BlockingIOError as exc:
+                raise SaveOperationBusy("已有存档操作正在进行，请等待完成后再试") from exc
+        handle.seek(0)
+        handle.truncate()
         handle.write(f"{os.getpid()} {iso_now()}\n")
         handle.flush()
         yield
     finally:
         try:
-            import fcntl
+            if locked_with == "msvcrt":
+                import msvcrt
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            elif locked_with == "fcntl":
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except Exception:
             pass
         handle.close()
@@ -807,6 +835,498 @@ def safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info) as source_file, destination.open("wb") as target_file:
                 shutil.copyfileobj(source_file, target_file)
+
+
+MOD_ALLOWED_UPLOAD_SUFFIXES = {".pak", ".sig", ".zip"}
+MOD_DANGEROUS_SUFFIXES = {".exe", ".bat", ".cmd", ".ps1", ".sh", ".dll", ".so", ".dylib", ".msi", ".scr", ".com"}
+
+
+def ensure_mod_dirs() -> None:
+    MOD_LIBRARY_ROOT.mkdir(parents=True, exist_ok=True)
+    (MOD_LIBRARY_ROOT / "disabled").mkdir(parents=True, exist_ok=True)
+    (MOD_LIBRARY_ROOT / "imports").mkdir(parents=True, exist_ok=True)
+    (MOD_LIBRARY_ROOT / "metadata").mkdir(parents=True, exist_ok=True)
+    (MOD_LIBRARY_ROOT / "trash").mkdir(parents=True, exist_ok=True)
+    MOD_PAK_DIR.mkdir(parents=True, exist_ok=True)
+    OFFICIAL_MOD_WORKSHOP_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def mod_metadata_path(mod_id: str) -> Path:
+    return MOD_LIBRARY_ROOT / "metadata" / f"{normalize_mod_id(mod_id)}.json"
+
+
+def normalize_mod_id(raw: str) -> str:
+    mod_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(raw or "").strip()).strip("-_.")
+    return (mod_id[:80] or f"mod-{int(time.time())}").lower()
+
+
+def path_within_any(path: Path, roots: list[Path]) -> bool:
+    return any(path_within(path, root) for root in roots)
+
+
+def assert_safe_mod_path(path: Path) -> Path:
+    resolved = path.resolve()
+    roots = [MOD_LIBRARY_ROOT, MOD_PAK_DIR, PAL_MODS_DIR]
+    if path_within_any(resolved, roots):
+        return resolved
+    raise ValueError(f"Path is outside managed mod roots: {path}")
+
+
+def read_mod_meta(mod_id: str) -> dict[str, Any]:
+    return read_json(mod_metadata_path(mod_id), {})
+
+
+def write_mod_meta(mod_id: str, payload: dict[str, Any]) -> None:
+    payload["id"] = normalize_mod_id(mod_id)
+    payload["updated_at"] = iso_now()
+    write_json(mod_metadata_path(mod_id), payload)
+
+
+def mod_file_info(path: Path) -> dict[str, Any]:
+    return {
+        "name": path.name,
+        "path": str(path),
+        "size_bytes": path.stat().st_size if path.exists() and path.is_file() else 0,
+        "updated_at": format_ts(path.stat().st_mtime if path.exists() else None),
+    }
+
+
+def safe_extract_mod_zip(zip_path: Path, target_dir: Path) -> None:
+    target_dir = assert_safe_mod_path(target_dir)
+    total_size = 0
+    with zipfile.ZipFile(zip_path) as archive:
+        for info in archive.infolist():
+            name = info.filename.replace("\\", "/")
+            if not name or name.startswith("/") or ".." in Path(name).parts:
+                raise ValueError("压缩包包含不安全路径")
+            suffix = Path(name).suffix.lower()
+            if suffix in MOD_DANGEROUS_SUFFIXES:
+                raise ValueError(f"压缩包包含禁止的文件类型：{suffix}")
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise ValueError("压缩包不能包含符号链接")
+            total_size += info.file_size
+            if total_size > MOD_UPLOAD_MAX_BYTES:
+                raise ValueError("MOD 压缩包解压后太大")
+
+        for info in archive.infolist():
+            name = info.filename.replace("\\", "/")
+            destination = (target_dir / name).resolve()
+            if not path_within(destination, target_dir):
+                raise ValueError("压缩包包含不安全路径")
+            if name.endswith("/"):
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as source_file, destination.open("wb") as target_file:
+                shutil.copyfileobj(source_file, target_file)
+
+
+def find_info_json(root: Path) -> Path | None:
+    matches = [path for path in root.rglob("Info.json") if path.is_file()]
+    if not matches:
+        return None
+    matches.sort(key=lambda item: len(item.parts))
+    return matches[0]
+
+
+def read_official_mod_info(info_path: Path) -> dict[str, Any]:
+    payload = json.loads(info_path.read_text(encoding="utf-8", errors="replace"))
+    if not isinstance(payload, dict):
+        raise ValueError("Info.json 格式不正确")
+    package_name = str(payload.get("PackageName") or payload.get("Name") or info_path.parent.name).strip()
+    if not package_name:
+        raise ValueError("Info.json 缺少 PackageName")
+    return {
+        "package_name": package_name,
+        "version": str(payload.get("Version") or payload.get("ModVersion") or ""),
+        "is_server": payload.get("IsServer"),
+        "install_rules": payload.get("InstallRules"),
+        "raw": payload,
+    }
+
+
+def read_active_official_mods() -> set[str]:
+    if not PAL_MOD_SETTINGS.exists():
+        return set()
+    text = PAL_MOD_SETTINGS.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"^ActiveModList=(.*)$", text, re.M)
+    if not match:
+        return set()
+    return {item.strip() for item in re.split(r"[,;]", match.group(1)) if item.strip()}
+
+
+def write_active_official_mods(active: set[str]) -> None:
+    PAL_MOD_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "[/Script/Pal.PalGameLocalSettings]",
+        "bGlobalEnableMod=true" if active else "bGlobalEnableMod=false",
+        "ActiveModList=" + ",".join(sorted(active)),
+        "",
+    ]
+    tmp = PAL_MOD_SETTINGS.with_suffix(".ini.tmp")
+    tmp.write_text("\n".join(lines), encoding="utf-8")
+    tmp.replace(PAL_MOD_SETTINGS)
+
+
+def discover_mod_files(mod_id: str, enabled: bool) -> list[Path]:
+    root = MOD_PAK_DIR if enabled else MOD_LIBRARY_ROOT / "disabled"
+    mod_id = normalize_mod_id(mod_id)
+    files = []
+    for path in root.glob("*"):
+        if path.is_file() and path.suffix.lower() in {".pak", ".sig"} and normalize_mod_id(path.stem) == mod_id:
+            files.append(path)
+    return files
+
+
+def list_mods() -> list[dict[str, Any]]:
+    ensure_mod_dirs()
+    mods: dict[str, dict[str, Any]] = {}
+
+    for meta_file in (MOD_LIBRARY_ROOT / "metadata").glob("*.json"):
+        meta = read_json(meta_file, {})
+        if meta.get("deleted_at"):
+            continue
+        if meta.get("id"):
+            mods[str(meta["id"])] = meta
+
+    for enabled, root in [(True, MOD_PAK_DIR), (False, MOD_LIBRARY_ROOT / "disabled")]:
+        for path in root.glob("*"):
+            if not path.is_file() or path.suffix.lower() not in {".pak", ".sig"}:
+                continue
+            mod_id = normalize_mod_id(path.stem)
+            meta = mods.setdefault(
+                mod_id,
+                {
+                    "id": mod_id,
+                    "name": path.stem,
+                    "type": "pak",
+                    "source": "discovered",
+                    "created_at": "",
+                    "notes": "",
+                },
+            )
+            meta["enabled"] = enabled or bool(meta.get("enabled"))
+            meta["type"] = "pak" if meta.get("type") in {None, "", "sig"} else meta.get("type")
+            meta.setdefault("files", [])
+            meta["files"] = [*meta.get("files", []), mod_file_info(path)]
+
+    active_official = read_active_official_mods()
+    for item in OFFICIAL_MOD_WORKSHOP_DIR.iterdir() if OFFICIAL_MOD_WORKSHOP_DIR.exists() else []:
+        if not item.is_dir():
+            continue
+        info_path = item / "Info.json"
+        if not info_path.exists():
+            continue
+        try:
+            info = read_official_mod_info(info_path)
+        except Exception:
+            info = {"package_name": item.name, "version": "", "is_server": None, "install_rules": None}
+        mod_id = normalize_mod_id(item.name)
+        meta = mods.setdefault(
+            mod_id,
+            {
+                "id": mod_id,
+                "name": info["package_name"],
+                "type": "official",
+                "source": "discovered",
+                "created_at": "",
+                "notes": "",
+            },
+        )
+        meta.update(
+            {
+                "type": "official",
+                "package_name": info["package_name"],
+                "version": info.get("version", ""),
+                "is_server": info.get("is_server"),
+                "install_rules": info.get("install_rules"),
+                "enabled": info["package_name"] in active_official,
+                "path": str(item),
+                "size_bytes": dir_size(item),
+                "updated_at": format_ts(latest_mtime(item)),
+                "compatibility": "官方服务端 MOD 目前官方标注仅 Windows dedicated server 支持；Linux/Docker 后端请谨慎启用。",
+            }
+        )
+
+    for meta in mods.values():
+        if meta.get("type") == "pak":
+            files = meta.get("files") or []
+            meta["size_bytes"] = sum(file.get("size_bytes", 0) for file in files)
+            meta["compatibility"] = "PAK MOD 通常要求客户端安装同款 MOD；启用后需要重启服务器。"
+        meta.setdefault("enabled", False)
+        meta.setdefault("needs_restart", True)
+
+    return sorted(mods.values(), key=lambda item: (not item.get("enabled", False), item.get("name") or item.get("id") or ""))
+
+
+def install_pak_files(files: list[Path], name: str = "", notes: str = "") -> dict[str, Any]:
+    pak_files = [path for path in files if path.suffix.lower() == ".pak"]
+    if not pak_files:
+        raise ValueError("未找到 .pak 文件")
+    installed = []
+    primary = pak_files[0]
+    mod_id = normalize_mod_id(primary.stem)
+    for path in files:
+        if path.suffix.lower() not in {".pak", ".sig"}:
+            continue
+        if path.suffix.lower() == ".sig" and normalize_mod_id(path.stem) != mod_id:
+            continue
+        target = MOD_PAK_DIR / path.name
+        if target.exists():
+            raise ValueError(f"MOD 文件已存在：{target.name}")
+        shutil.copy2(path, target)
+        installed.append(mod_file_info(target))
+    meta = {
+        "id": mod_id,
+        "name": name or primary.stem,
+        "type": "pak",
+        "enabled": True,
+        "source": "uploaded",
+        "created_at": iso_now(),
+        "notes": notes,
+        "files": installed,
+        "needs_restart": True,
+    }
+    write_mod_meta(mod_id, meta)
+    return meta
+
+
+def install_official_mod(source_root: Path, name: str = "", notes: str = "") -> dict[str, Any]:
+    info_path = find_info_json(source_root)
+    if not info_path:
+        raise ValueError("未找到 Info.json")
+    info = read_official_mod_info(info_path)
+    mod_id = normalize_mod_id(info["package_name"])
+    target = OFFICIAL_MOD_WORKSHOP_DIR / mod_id
+    if target.exists():
+        raise ValueError(f"官方 MOD 已存在：{mod_id}")
+    shutil.copytree(info_path.parent, target, symlinks=False)
+    meta = {
+        "id": mod_id,
+        "name": name or info["package_name"],
+        "type": "official",
+        "enabled": False,
+        "source": "uploaded",
+        "created_at": iso_now(),
+        "notes": notes,
+        "package_name": info["package_name"],
+        "version": info.get("version", ""),
+        "is_server": info.get("is_server"),
+        "install_rules": info.get("install_rules"),
+        "path": str(target),
+        "size_bytes": dir_size(target),
+        "needs_restart": True,
+        "compatibility": "官方服务端 MOD 目前官方标注仅 Windows dedicated server 支持；Linux/Docker 后端默认导入但不自动启用。",
+    }
+    write_mod_meta(mod_id, meta)
+    return meta
+
+
+def upload_mod(file_storage, name: str = "", notes: str = "") -> dict[str, Any]:
+    ensure_mod_dirs()
+    filename = Path(file_storage.filename or "").name
+    if not filename:
+        raise ValueError("请选择要上传的 MOD 文件")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in MOD_ALLOWED_UPLOAD_SUFFIXES:
+        raise ValueError("只支持上传 .pak、.sig 或 .zip")
+    if suffix in MOD_DANGEROUS_SUFFIXES:
+        raise ValueError("禁止上传可执行文件或脚本")
+
+    upload_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{normalize_mod_id(filename)}"
+    upload_dir = MOD_LIBRARY_ROOT / "imports" / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=False)
+    upload_path = upload_dir / filename
+    file_storage.save(upload_path)
+    if upload_path.stat().st_size > MOD_UPLOAD_MAX_BYTES:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise ValueError("MOD 文件太大")
+
+    try:
+        if suffix == ".zip":
+            extract_dir = upload_dir / "extracted"
+            extract_dir.mkdir()
+            safe_extract_mod_zip(upload_path, extract_dir)
+            info_path = find_info_json(extract_dir)
+            if info_path:
+                mod = install_official_mod(extract_dir, name=name, notes=notes)
+            else:
+                files = [path for path in extract_dir.rglob("*") if path.is_file() and path.suffix.lower() in {".pak", ".sig"}]
+                mod = install_pak_files(files, name=name, notes=notes)
+        elif suffix == ".pak":
+            sidecar = upload_path.with_suffix(".sig")
+            files = [upload_path, sidecar] if sidecar.exists() else [upload_path]
+            mod = install_pak_files(files, name=name, notes=notes)
+        else:
+            target = MOD_PAK_DIR / filename
+            if target.exists():
+                raise ValueError(f"MOD 文件已存在：{target.name}")
+            shutil.copy2(upload_path, target)
+            mod_id = normalize_mod_id(upload_path.stem)
+            mod = {
+                "id": mod_id,
+                "name": name or upload_path.stem,
+                "type": "sig",
+                "enabled": True,
+                "source": "uploaded",
+                "created_at": iso_now(),
+                "notes": notes,
+                "files": [mod_file_info(target)],
+                "needs_restart": True,
+            }
+            write_mod_meta(mod_id, mod)
+        mod["upload_path"] = str(upload_dir)
+        return mod
+    except Exception:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise
+
+
+def set_mod_enabled(mod_id: str, enabled: bool, allow_official: bool = False) -> dict[str, Any]:
+    ensure_mod_dirs()
+    mod_id = normalize_mod_id(mod_id)
+    meta = read_mod_meta(mod_id)
+    official_dir = OFFICIAL_MOD_WORKSHOP_DIR / mod_id
+    if not meta and (official_dir / "Info.json").exists():
+        info = read_official_mod_info(official_dir / "Info.json")
+        meta = {
+            "id": mod_id,
+            "name": info["package_name"],
+            "type": "official",
+            "package_name": info["package_name"],
+            "version": info.get("version", ""),
+            "is_server": info.get("is_server"),
+            "install_rules": info.get("install_rules"),
+            "path": str(official_dir),
+        }
+    mod_type = meta.get("type") or "pak"
+    if mod_type == "official":
+        package_name = str(meta.get("package_name") or meta.get("name") or "").strip()
+        if not package_name:
+            raise ValueError("官方 MOD 缺少 PackageName")
+        if enabled and not allow_official:
+            raise ValueError("官方服务端 MOD 在当前 Linux/Docker 后端存在兼容风险，请确认风险后再启用")
+        active = read_active_official_mods()
+        if enabled:
+            active.add(package_name)
+        else:
+            active.discard(package_name)
+        write_active_official_mods(active)
+        meta["enabled"] = enabled
+        meta["needs_restart"] = True
+        write_mod_meta(mod_id, meta)
+        return meta
+
+    source_root = MOD_LIBRARY_ROOT / "disabled" if enabled else MOD_PAK_DIR
+    target_root = MOD_PAK_DIR if enabled else MOD_LIBRARY_ROOT / "disabled"
+    moved = []
+    for path in discover_mod_files(mod_id, not enabled):
+        target = target_root / path.name
+        if target.exists():
+            raise ValueError(f"目标文件已存在：{target.name}")
+        shutil.move(str(path), str(target))
+        moved.append(mod_file_info(target))
+    if not moved:
+        for path in source_root.glob(f"{mod_id}*"):
+            if path.is_file() and path.suffix.lower() in {".pak", ".sig"}:
+                target = target_root / path.name
+                shutil.move(str(path), str(target))
+                moved.append(mod_file_info(target))
+    if not moved:
+        raise ValueError("未找到可切换的 MOD 文件")
+    meta.update({"id": mod_id, "type": "pak", "enabled": enabled, "files": moved, "needs_restart": True})
+    write_mod_meta(mod_id, meta)
+    return meta
+
+
+def delete_mod(mod_id: str) -> dict[str, Any]:
+    ensure_mod_dirs()
+    mod_id = normalize_mod_id(mod_id)
+    meta = read_mod_meta(mod_id)
+    trash_dir = MOD_LIBRARY_ROOT / "trash" / f"{time.strftime('%Y%m%d-%H%M%S')}-{mod_id}"
+    trash_dir.mkdir(parents=True, exist_ok=False)
+    moved = []
+
+    official_dir = OFFICIAL_MOD_WORKSHOP_DIR / mod_id
+    if meta.get("type") == "official" or official_dir.exists():
+        package_name = str(meta.get("package_name") or "").strip()
+        if not package_name and (official_dir / "Info.json").exists():
+            package_name = read_official_mod_info(official_dir / "Info.json")["package_name"]
+        active = read_active_official_mods()
+        if package_name and package_name in active:
+            active.discard(package_name)
+            write_active_official_mods(active)
+        source = official_dir
+        if source.exists():
+            shutil.move(str(source), str(trash_dir / source.name))
+            moved.append(str(trash_dir / source.name))
+    else:
+        for enabled in (True, False):
+            for path in discover_mod_files(mod_id, enabled):
+                target = trash_dir / path.name
+                shutil.move(str(path), str(target))
+                moved.append(str(target))
+
+    if not moved:
+        raise ValueError("未找到要删除的 MOD 文件")
+    meta.update({"enabled": False, "deleted_at": iso_now(), "trash_path": str(trash_dir), "needs_restart": True})
+    write_mod_meta(mod_id, meta)
+    return meta
+
+
+def empty_mod_trash() -> int:
+    ensure_mod_dirs()
+    trash = MOD_LIBRARY_ROOT / "trash"
+    count = 0
+    for item in list(trash.iterdir()):
+        item = assert_safe_mod_path(item)
+        if item.is_dir():
+            shutil.rmtree(item)
+            count += 1
+        elif item.is_file():
+            item.unlink()
+            count += 1
+    return count
+
+
+def get_mod_status() -> dict[str, Any]:
+    mods = list_mods()
+    return {
+        "backend": PALWORLD_BACKEND,
+        "mode": PALWORLD_MOD_MODE,
+        "mod_library_root": str(MOD_LIBRARY_ROOT),
+        "pak_enabled_dir": str(MOD_PAK_DIR),
+        "official_mod_dir": str(PAL_MODS_DIR),
+        "official_server_mods_supported": False,
+        "ue4ss_supported": False,
+        "needs_restart": any(mod.get("needs_restart") for mod in mods),
+        "mods_count": len(mods),
+        "enabled_count": sum(1 for mod in mods if mod.get("enabled")),
+        "warning": "2.0 首版只自动管理 PAK/官方 Info.json 包；UE4SS/Lua 不自动安装。官方服务端 MOD 目前官方标注仅 Windows dedicated server 支持。",
+    }
+
+
+def restart_for_mods() -> dict[str, Any]:
+    steps: list[dict[str, Any]] = []
+
+    def step(name: str, success: bool, message: str = "") -> None:
+        steps.append({"step": name, "success": success, "message": message})
+
+    backup = None
+    try:
+        backup = backup_current_save("before-mod-restart")
+        step("backup", True, backup["id"])
+    except Exception as exc:
+        step("backup", False, str(exc))
+
+    success, message = service_action("restart")
+    step("restart", success, message)
+    if not success:
+        raise RuntimeError(message)
+    restored = wait_for_service_state(True, timeout=90)
+    step("status", restored, "server running" if restored else "server did not report running in time")
+    return {"backup": backup, "steps": steps, "running": get_server_status()["running"]}
 
 
 def copytree_clean(source: Path, target: Path) -> None:
@@ -1671,6 +2191,143 @@ def api_saves_delete_slot(slot_id: str):
         return jsonify({"success": False, "message": str(exc)}), 400
     except Exception as exc:
         audit_event("saves.delete_slot", False, slot_id=slot_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/mods/status")
+def api_mods_status():
+    try:
+        return jsonify({"success": True, "status": get_mod_status()})
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/mods/list")
+def api_mods_list():
+    try:
+        return jsonify({"success": True, "mods": list_mods()})
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/mods/upload", methods=["POST"])
+def api_mods_upload():
+    file_storage = request.files.get("file")
+    name = str(request.form.get("name", "")).strip()
+    notes = str(request.form.get("notes", "")).strip()
+    if not file_storage:
+        return jsonify({"success": False, "message": "请选择 .pak、.sig 或 .zip MOD 文件"}), 400
+    try:
+        with save_operation_lock():
+            mod = upload_mod(file_storage, name=name, notes=notes)
+        audit_event("mods.upload", True, mod_id=mod["id"], filename=file_storage.filename, mod_type=mod.get("type"))
+        return jsonify({"success": True, "mod": mod, "message": "MOD 上传并导入完成"})
+    except SaveOperationBusy as exc:
+        audit_event("mods.upload", False, filename=file_storage.filename, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
+    except ValueError as exc:
+        audit_event("mods.upload", False, filename=file_storage.filename, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 400
+    except Exception as exc:
+        audit_event("mods.upload", False, filename=file_storage.filename, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/mods/enable", methods=["POST"])
+def api_mods_enable():
+    data = request.get_json(silent=True) or {}
+    mod_id = str(data.get("mod_id", "")).strip()
+    allow_official = bool(data.get("allow_official"))
+    if not mod_id:
+        return jsonify({"success": False, "message": "缺少 mod_id"}), 400
+    try:
+        with save_operation_lock():
+            mod = set_mod_enabled(mod_id, True, allow_official=allow_official)
+        audit_event("mods.enable", True, mod_id=mod_id, mod_type=mod.get("type"))
+        return jsonify({"success": True, "mod": mod, "message": "MOD 已启用，重启服务器后生效"})
+    except SaveOperationBusy as exc:
+        audit_event("mods.enable", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
+    except ValueError as exc:
+        audit_event("mods.enable", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 400
+    except Exception as exc:
+        audit_event("mods.enable", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/mods/disable", methods=["POST"])
+def api_mods_disable():
+    data = request.get_json(silent=True) or {}
+    mod_id = str(data.get("mod_id", "")).strip()
+    if not mod_id:
+        return jsonify({"success": False, "message": "缺少 mod_id"}), 400
+    try:
+        with save_operation_lock():
+            mod = set_mod_enabled(mod_id, False)
+        audit_event("mods.disable", True, mod_id=mod_id, mod_type=mod.get("type"))
+        return jsonify({"success": True, "mod": mod, "message": "MOD 已禁用，重启服务器后生效"})
+    except SaveOperationBusy as exc:
+        audit_event("mods.disable", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
+    except ValueError as exc:
+        audit_event("mods.disable", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 400
+    except Exception as exc:
+        audit_event("mods.disable", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/mods/<mod_id>", methods=["DELETE"])
+def api_mods_delete(mod_id: str):
+    try:
+        with save_operation_lock():
+            mod = delete_mod(mod_id)
+        audit_event("mods.delete", True, mod_id=mod_id)
+        return jsonify({"success": True, "mod": mod, "message": "MOD 已移入废纸篓，重启服务器后生效"})
+    except SaveOperationBusy as exc:
+        audit_event("mods.delete", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
+    except ValueError as exc:
+        audit_event("mods.delete", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 400
+    except Exception as exc:
+        audit_event("mods.delete", False, mod_id=mod_id, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/mods/empty_trash", methods=["POST"])
+def api_mods_empty_trash():
+    try:
+        with save_operation_lock():
+            count = empty_mod_trash()
+        audit_event("mods.empty_trash", True, count=count)
+        return jsonify({"success": True, "count": count, "message": f"已清理 {count} 个废纸篓项目"})
+    except SaveOperationBusy as exc:
+        audit_event("mods.empty_trash", False, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
+    except Exception as exc:
+        audit_event("mods.empty_trash", False, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 500
+
+
+@app.route("/api/mods/apply_restart", methods=["POST"])
+def api_mods_apply_restart():
+    try:
+        with save_operation_lock():
+            result = restart_for_mods()
+        audit_event(
+            "mods.apply_restart",
+            True,
+            backup_id=(result.get("backup") or {}).get("id"),
+            running=result.get("running"),
+        )
+        return jsonify({"success": True, "message": "服务器已重启，MOD 变更已应用", **result})
+    except SaveOperationBusy as exc:
+        audit_event("mods.apply_restart", False, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
+    except Exception as exc:
+        audit_event("mods.apply_restart", False, message=str(exc))
         return jsonify({"success": False, "message": str(exc)}), 500
 
 

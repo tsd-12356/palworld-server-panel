@@ -57,6 +57,9 @@ services:
       PANEL_INSTALL_LOG: /app/data/install.log
       PANEL_ASSET_VERSION: ${PANEL_ASSET_VERSION:-docker}
       AUTO_UPDATE_ENABLED: "false"
+      MOD_LIBRARY_ROOT: ${MOD_LIBRARY_ROOT:-/app/data/mod-library}
+      MOD_UPLOAD_MAX_BYTES: ${MOD_UPLOAD_MAX_BYTES:-1073741824}
+      PALWORLD_MOD_MODE: ${PALWORLD_MOD_MODE:-pak-safe}
     ports:
       - "${PANEL_PORT:-8080}:8080"
     volumes:
