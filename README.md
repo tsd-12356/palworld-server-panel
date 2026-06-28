@@ -20,7 +20,7 @@
 - **面板好看**：浅色玻璃拟态、星尘粒子、鼠标光斑、卡片动效，比传统黑框面板更舒服。
 - **功能够完整**：状态、在线玩家、日志、配置、RCON、存档、更新、审计、机器监控都在一个页面里。
 - **运维可追踪**：操作记录会写入审计日志，方便回看谁做了什么。
-- **开源友好**：不依赖 npm/Vite/Tailwind，Flask + 原生 CSS/JS，容易二次开发。
+- **轻量易维护**：不依赖 npm/Vite/Tailwind，Flask + 原生 CSS/JS，部署和二次开发都更直接。
 
 ## 界面预览
 
@@ -151,20 +151,30 @@ journalctl -u palworld.service -f
 
 更多见 [安全说明](docs/SECURITY.md)。
 
-## 文档
+## 适合谁使用
+
+- 想给朋友服、家庭服、内网服搭一个好看面板。
+- 希望少写命令，通过网页完成启动、停止、重启、配置、存档和更新。
+- 希望用 Docker Compose 快速部署，也希望保留原生 systemd 部署选择。
+- 已经有 Tailscale、ZeroTier、内网或可信反代作为访问边界。
+
+如果你要把面板直接暴露到公网，请先自行加登录、访问控制或反向代理鉴权。
+
+## 文档入口
 
 - [Docker 部署](docs/DOCKER.md)
 - [Ubuntu/Debian 原生部署](docs/SYSTEMD.md)
 - [常见问题](docs/FAQ.md)
 - [安全说明](docs/SECURITY.md)
-- [发布到 GitHub](docs/PUBLISHING.md)
 - [Roadmap](ROADMAP.md)
 - [v0.1.0-beta 发布说明](docs/releases/v0.1.0-beta.md)
 
-## 当前状态
+## 版本状态
 
 - systemd 模式已在真实服务器验证。
-- Docker 模式已完成配置和后端控制逻辑，建议先标注为 beta，并在干净 Docker 主机上跑一次完整首启测试。
+- Docker Compose 是推荐部署方式，当前版本为 beta，建议首次部署时先观察 `palworld` 容器日志，确认服务端下载和启动完成。
+- 面板默认不包含登录系统，适合自用、内网、Tailscale、ZeroTier 或可信反代环境。
+- 欢迎通过 Issue 反馈 Docker 部署、systemd 安装、存档管理、配置编辑或 UI 体验问题。
 
 ## License
 
