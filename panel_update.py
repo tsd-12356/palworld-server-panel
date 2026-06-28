@@ -30,7 +30,8 @@ PALWORLD_DEPOT_ID = os.environ.get("PALWORLD_DEPOT_ID", "2394012")
 STEAMCMD = os.environ.get("STEAMCMD", "/home/demo/steamcmd/steamcmd.sh")
 SYSTEMCTL = os.environ.get("SYSTEMCTL", "/usr/bin/systemctl")
 CHOWN = os.environ.get("CHOWN", "/usr/bin/chown")
-AUTO_UPDATE_ENABLED = os.environ.get("AUTO_UPDATE_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+PANEL_USER = os.environ.get("PANEL_USER", "demo")
+AUTO_UPDATE_ENABLED = os.environ.get("AUTO_UPDATE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 AUTO_UPDATE_WARN_MINUTES = int(os.environ.get("AUTO_UPDATE_WARN_MINUTES", "10") or "10")
 
 RCON_HOST = os.environ.get("RCON_HOST", "127.0.0.1")
@@ -371,9 +372,10 @@ def fix_ownership() -> None:
         PALWORLD_DIR / "Pal" / "Saved" / "SaveGames",
         CONFIG_DIR,
     ]
+    owner = f"{PANEL_USER}:{PANEL_USER}"
     for path in paths:
         if path.exists():
-            run_privileged([CHOWN, "-R", "demo:demo", str(path)], timeout=180)
+            run_privileged([CHOWN, "-R", owner, str(path)], timeout=180)
 
 
 def run_steam_update() -> None:

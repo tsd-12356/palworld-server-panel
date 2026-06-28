@@ -40,6 +40,7 @@ PALWORLD_CONFIG = Path(
 PALWORLD_SERVICE = os.environ.get("PALWORLD_SERVICE", "palworld.service")
 PALWORLD_BACKEND = os.environ.get("PALWORLD_BACKEND", "systemd").strip().lower()
 PALWORLD_CONTAINER_NAME = os.environ.get("PALWORLD_CONTAINER_NAME", "palworld-panel-palworld-1")
+PANEL_USER = os.environ.get("PANEL_USER", "demo")
 
 RCON_HOST = os.environ.get("RCON_HOST", "127.0.0.1")
 RCON_PORT = int(os.environ.get("RCON_PORT", "25575"))
@@ -1006,8 +1007,9 @@ def wait_for_service_state(active: bool, timeout: int = 80) -> bool:
 def fix_save_ownership() -> None:
     if using_docker_backend():
         return
-    run_command([CHOWN, "-R", "demo:demo", str(SAVE_ROOT / "SaveGames")], timeout=60, sudo=True)
-    run_command([CHOWN, "-R", "demo:demo", str(CONFIG_DIR)], timeout=60, sudo=True)
+    owner = f"{PANEL_USER}:{PANEL_USER}"
+    run_command([CHOWN, "-R", owner, str(SAVE_ROOT / "SaveGames")], timeout=60, sudo=True)
+    run_command([CHOWN, "-R", owner, str(CONFIG_DIR)], timeout=60, sudo=True)
 
 
 def switch_save_slot(slot_id: str) -> dict[str, Any]:
