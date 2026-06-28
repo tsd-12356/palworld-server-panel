@@ -1,0 +1,17 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.env
+.env.*
+!.env.example
+data/
+save-slots/
+config-backups/
+*.bak
+*.tmp
+.DS_Store
+.vscode/
+.idea/

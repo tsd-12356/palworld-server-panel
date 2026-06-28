@@ -1,0 +1,16 @@
+[Unit]
+Description=Palworld Web Management Panel
+After=network.target
+
+[Service]
+Type=simple
+User=demo
+WorkingDirectory=/home/demo/palworld-panel
+Environment=HOME=/home/demo
+EnvironmentFile=/etc/palworld-panel.env
+ExecStart=/usr/bin/gunicorn --config /home/demo/palworld-panel/gunicorn.conf.py app:app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

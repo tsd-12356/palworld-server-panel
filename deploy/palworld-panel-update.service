@@ -1,0 +1,14 @@
+[Unit]
+Description=Palworld Panel Background Updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=demo
+Group=demo
+WorkingDirectory=/home/demo/palworld-panel
+EnvironmentFile=/etc/palworld-panel.env
+ExecStart=/usr/bin/python3 /home/demo/palworld-panel/panel_update.py --apply
+TimeoutStartSec=5400
+Nice=5

@@ -1,0 +1,31 @@
+FROM debian:12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    STEAMCMD_DIR=/steamcmd \
+    PALWORLD_DIR=/palworld \
+    PALWORLD_APP_ID=2394010 \
+    PALWORLD_PORT=8211 \
+    PALWORLD_QUERY_PORT=27015 \
+    RCON_PORT=25575
+
+RUN dpkg --add-architecture i386 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        python3 \
+        tar \
+        lib32gcc-s1 \
+        lib32stdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /steamcmd /palworld
+
+COPY docker/palworld-entrypoint.sh /usr/local/bin/palworld-entrypoint.sh
+RUN chmod +x /usr/local/bin/palworld-entrypoint.sh
+
+WORKDIR /palworld
+
+EXPOSE 8211/udp 27015/udp 25575/tcp
+
+ENTRYPOINT ["/usr/local/bin/palworld-entrypoint.sh"]

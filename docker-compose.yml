@@ -1,0 +1,65 @@
+services:
+  palworld:
+    build:
+      context: .
+      dockerfile: Dockerfile.palworld
+    container_name: ${PALWORLD_CONTAINER_NAME:-palworld-panel-palworld-1}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PALWORLD_DIR: /palworld
+      STEAMCMD_DIR: /steamcmd
+      PALWORLD_APP_ID: ${PALWORLD_APP_ID:-2394010}
+      PALWORLD_PORT: ${PALWORLD_PORT:-8211}
+      PALWORLD_QUERY_PORT: ${PALWORLD_QUERY_PORT:-27015}
+      RCON_PORT: ${RCON_PORT:-25575}
+      RCON_PASSWORD: ${RCON_PASSWORD}
+      SERVER_NAME: ${SERVER_NAME:-Palworld Docker Server}
+      SERVER_DESCRIPTION: ${SERVER_DESCRIPTION:-Managed by Palworld Panel}
+      SERVER_MAX_PLAYERS: ${SERVER_MAX_PLAYERS:-32}
+    ports:
+      - "${PALWORLD_PORT:-8211}:8211/udp"
+      - "${PALWORLD_QUERY_PORT:-27015}:27015/udp"
+      - "${RCON_PORT:-25575}:25575/tcp"
+    volumes:
+      - ./data/palworld:/palworld
+      - ./data/steamcmd:/steamcmd
+
+  panel:
+    build:
+      context: .
+      dockerfile: Dockerfile.panel
+    container_name: ${PANEL_CONTAINER_NAME:-palworld-panel}
+    restart: unless-stopped
+    depends_on:
+      - palworld
+    env_file:
+      - .env
+    environment:
+      PANEL_PORT: 8080
+      PANEL_BACKEND: docker
+      PALWORLD_BACKEND: docker
+      PALWORLD_CONTAINER_NAME: ${PALWORLD_CONTAINER_NAME:-palworld-panel-palworld-1}
+      PANEL_DIR: /app/data
+      PALWORLD_DIR: /palworld
+      PALWORLD_SERVICE: palworld-container
+      RCON_HOST: palworld
+      RCON_PORT: ${RCON_PORT:-25575}
+      RCON_PASSWORD: ${RCON_PASSWORD}
+      PANEL_SECRET_KEY: ${PANEL_SECRET_KEY}
+      CONFIG_BACKUP_DIR: /app/data/config-backups
+      AUDIT_LOG: /app/data/audit.log
+      SAVE_SLOT_ROOT: /app/data/save-slots
+      PANEL_UPDATE_STATUS: /app/data/update-status.json
+      PANEL_UPDATE_LOG: /app/data/update.log
+      PANEL_INSTALL_STATUS: /app/data/install-status.json
+      PANEL_INSTALL_LOG: /app/data/install.log
+      PANEL_ASSET_VERSION: ${PANEL_ASSET_VERSION:-docker}
+      AUTO_UPDATE_ENABLED: "false"
+    ports:
+      - "${PANEL_PORT:-8080}:8080"
+    volumes:
+      - ./data/panel:/app/data
+      - ./data/palworld:/palworld
+      - /var/run/docker.sock:/var/run/docker.sock
