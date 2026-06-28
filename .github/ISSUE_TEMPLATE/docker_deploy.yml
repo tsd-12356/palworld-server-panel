@@ -1,0 +1,36 @@
+name: Docker deployment help
+description: Get help with Docker Compose installation or container control.
+title: "[Docker]: "
+labels:
+  - docker
+  - help wanted
+body:
+  - type: textarea
+    id: command
+    attributes:
+      label: Commands you ran
+      description: Include the exact docker compose commands.
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: compose_logs
+    attributes:
+      label: Docker logs
+      description: Paste `docker compose ps`, `docker compose logs panel`, and `docker compose logs palworld` output. Remove secrets.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Docker version, Compose version, CPU/RAM, and whether this is a VPS or home server.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Basic checks
+      options:
+        - label: I changed `RCON_PASSWORD` and `PANEL_SECRET_KEY` in `.env`.
+        - label: I did not expose the panel directly to the public internet without a trusted access layer.
+        - label: I removed secrets from the logs above.

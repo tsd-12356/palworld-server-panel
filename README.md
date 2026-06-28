@@ -1,5 +1,11 @@
 # Palworld Server Panel
 
+[![CI](https://github.com/tsd-12356/palworld-server-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/tsd-12356/palworld-server-panel/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Docker Compose](https://img.shields.io/badge/deploy-Docker%20Compose-2496ED.svg)](docs/DOCKER.md)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](requirements.txt)
+[![Release](https://img.shields.io/badge/release-v0.1.0--beta-orange.svg)](docs/releases/v0.1.0-beta.md)
+
 一个面向 Palworld Dedicated Server 的现代 Web 管理面板。主打 **自动化、省心运维、浅色毛玻璃 UI**：支持 Docker Compose 一键部署、服务器自动安装向导、存档管理、配置编辑、RCON、日志、机器状态、手动更新和操作审计，适合个人服务器、朋友服和内网运维。
 
 > 当前项目默认不带登录系统，请放在内网、Tailscale、ZeroTier 或可信反代后使用。
@@ -152,6 +158,8 @@ journalctl -u palworld.service -f
 - [常见问题](docs/FAQ.md)
 - [安全说明](docs/SECURITY.md)
 - [发布到 GitHub](docs/PUBLISHING.md)
+- [Roadmap](ROADMAP.md)
+- [v0.1.0-beta 发布说明](docs/releases/v0.1.0-beta.md)
 
 ## 当前状态
 

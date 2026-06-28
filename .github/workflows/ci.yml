@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check Python syntax
+        run: python -m py_compile app.py panel_install.py panel_update.py
+
+      - name: Check shell scripts
+        run: bash -n install.sh docker/palworld-entrypoint.sh
+
+      - name: Validate Docker Compose config
+        run: |
+          cp .env.example .env
+          docker compose --env-file .env config

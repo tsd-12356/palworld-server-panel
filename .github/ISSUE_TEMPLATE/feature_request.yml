@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an improvement or new feature.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Tell us what currently feels slow, manual, risky, or missing.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or workflow you want.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - UI/UX
+        - Docker deployment
+        - systemd installer
+        - Saves and backups
+        - Config editor
+        - RCON/logs
+        - Updates
+        - Security
+        - Other

@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a bug in the panel or server control flow.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please include enough detail so the issue can be reproduced.
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment mode
+      options:
+        - Docker Compose
+        - Ubuntu/Debian systemd
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste panel, Docker, systemd, or browser console logs. Remove passwords and secrets.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0-beta or commit SHA
