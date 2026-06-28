@@ -35,7 +35,7 @@ git init
 git add .
 git commit -m "Initial release"
 git branch -M main
-git remote add origin https://github.com/<your-name>/<repo-name>.git
+git remote add origin https://github.com/tsd-12356/palworld-server-panel.git
 git push -u origin main
 ```
 

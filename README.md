@@ -1,4 +1,4 @@
-# Palworld Panel
+# Palworld Server Panel
 
 一个轻量、浅色毛玻璃风格的 Palworld Dedicated Server 管理面板。支持 Docker Compose 一键部署，也保留 Ubuntu/Debian 原生 systemd 安装器。
 
@@ -21,8 +21,8 @@
 适合大多数开源用户。
 
 ```bash
-git clone <你的仓库地址> palworld-panel
-cd palworld-panel
+git clone https://github.com/tsd-12356/palworld-server-panel.git
+cd palworld-server-panel
 cp .env.example .env
 ```
 
@@ -54,8 +54,8 @@ http://服务器IP:8080
 适合直接部署在 VPS 上，使用 systemd 管理服务。
 
 ```bash
-git clone <你的仓库地址> palworld-panel
-cd palworld-panel
+git clone https://github.com/tsd-12356/palworld-server-panel.git
+cd palworld-server-panel
 sudo bash install.sh
 ```
 
