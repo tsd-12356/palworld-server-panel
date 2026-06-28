@@ -1,44 +1,41 @@
 # Palworld Server Panel
 
-一个面向 Palworld Dedicated Server 的现代 Web 管理面板。主打浅色毛玻璃 UI、Docker Compose 一键部署、存档管理、配置编辑、RCON、日志、机器状态和手动更新，适合个人服务器、朋友服和内网运维。
+一个面向 Palworld Dedicated Server 的现代 Web 管理面板。主打 **自动化、省心运维、浅色毛玻璃 UI**：支持 Docker Compose 一键部署、服务器自动安装向导、存档管理、配置编辑、RCON、日志、机器状态、手动更新和操作审计，适合个人服务器、朋友服和内网运维。
 
 > 当前项目默认不带登录系统，请放在内网、Tailscale、ZeroTier 或可信反代后使用。
 
 ## 为什么选它
 
-- **一键部署**：推荐 Docker Compose，保留 Ubuntu/Debian 原生 systemd 安装器。
+- **部署省心**：推荐 Docker Compose 一键启动，也保留 Ubuntu/Debian 原生 systemd 安装器。
+- **安装省心**：内置安装向导，可检查环境、安装/修复 Palworld、SteamCMD、systemd 服务和权限。
+- **更新省心**：支持手动检测版本、后台触发更新，更新日志和状态直接在面板里看。
+- **存档省心**：支持备份、上传 zip 导入、创建新世界、切换存档、删除存档。
+- **配置省心**：可视化编辑 `PalWorldSettings.ini`，保存前显示差异确认，保存并重启有步骤反馈。
 - **面板好看**：浅色玻璃拟态、星尘粒子、鼠标光斑、卡片动效，比传统黑框面板更舒服。
 - **功能够完整**：状态、在线玩家、日志、配置、RCON、存档、更新、审计、机器监控都在一个页面里。
-- **存档管理强**：支持备份、上传 zip 导入、创建新世界、切换存档、删除存档。
-- **配置更安心**：可视化编辑 `PalWorldSettings.ini`，保存前显示差异确认，保存并重启有步骤反馈。
 - **运维可追踪**：操作记录会写入审计日志，方便回看谁做了什么。
 - **开源友好**：不依赖 npm/Vite/Tailwind，Flask + 原生 CSS/JS，容易二次开发。
 
 ## 界面预览
 
-建议在发布页放 3-5 张干净截图，效果会比纯文字强很多：
-
-- 仪表盘：展示服务器状态、机器状态、趋势图和玻璃 UI。
-- 存档管理：展示上传导入、当前存档、切换按钮。
-- 配置页面：展示倍率、玩法、网络等可视化配置。
-- 日志 / RCON：展示浅色终端和命令反馈。
-- 操作记录：展示审计列表。
-
-截图建议放在：
-
-```text
-docs/screenshots/dashboard.png
-docs/screenshots/saves.png
-docs/screenshots/config.png
-docs/screenshots/rcon.png
-docs/screenshots/audit.png
-```
-
-有截图后，可以在这里加入：
-
-```markdown
 ![Dashboard](docs/screenshots/dashboard.png)
-```
+
+| 可视化配置 | 存档管理 |
+| --- | --- |
+| ![Config](docs/screenshots/config.png) | ![Save slots](docs/screenshots/saves.png) |
+
+| 手动更新 | 安装向导 |
+| --- | --- |
+| ![Update manager](docs/screenshots/updates.png) | ![Installer](docs/screenshots/installer.png) |
+
+## 省心自动化
+
+- **首次部署自动化**：Docker 模式首次启动会自动安装 SteamCMD 和 Palworld Dedicated Server。
+- **环境检查自动化**：安装向导会检查 apt、systemd、Python、curl、tar、SteamCMD、Palworld、环境变量和服务状态。
+- **配置操作自动化**：保存配置前显示字段差异，保存并重启会展示“保存配置 -> 重启服务 -> 等待恢复 -> 刷新状态”。
+- **存档操作自动化**：切换存档会自动停止服务、备份当前存档、替换存档、修复权限、启动服务。
+- **更新流程自动化**：手动检测 manifest，确认后后台执行更新流程，日志和结果保留在面板里。
+- **运维审计自动化**：启动、停止、重启、配置保存、RCON、存档操作都会进入操作记录。
 
 ## 核心功能
 
@@ -50,6 +47,7 @@ docs/screenshots/audit.png
 | 日志与 RCON | 实时日志、RCON 控制台、命令结果分层展示 |
 | 机器状态 | CPU、内存、磁盘、负载、运行时间、迷你趋势图 |
 | 更新管理 | 手动检测更新、手动触发后台更新 |
+| 安装向导 | 环境检查、Palworld 安装、SteamCMD 检查、权限/服务修复 |
 | 操作审计 | 记录启动/停止/重启、配置保存、RCON、存档操作 |
 | 部署方式 | Docker Compose 推荐部署，systemd 原生部署保留 |
 
