@@ -18,10 +18,20 @@ services:
       SERVER_NAME: ${SERVER_NAME:-Palworld Docker Server}
       SERVER_DESCRIPTION: ${SERVER_DESCRIPTION:-Managed by Palworld Panel}
       SERVER_MAX_PLAYERS: ${SERVER_MAX_PLAYERS:-32}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,palworld,panel}
+      http_proxy: ${HTTP_PROXY:-}
+      https_proxy: ${HTTPS_PROXY:-}
+      all_proxy: ${ALL_PROXY:-}
+      no_proxy: ${NO_PROXY:-localhost,127.0.0.1,palworld,panel}
     ports:
       - "${PALWORLD_PORT:-8211}:8211/udp"
       - "${PALWORLD_QUERY_PORT:-27015}:27015/udp"
       - "${RCON_PORT:-25575}:25575/tcp"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data/palworld:/palworld
       - ./data/steamcmd:/steamcmd
