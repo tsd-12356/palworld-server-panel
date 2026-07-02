@@ -26,6 +26,14 @@ const state = {
     mods: [],
     modLoading: false,
     modBusy: false,
+    theme: localStorage.getItem("palworld-panel-theme") || "system",
+    motion: localStorage.getItem("palworld-panel-motion") || "luxe",
+    rawLogLines: [],
+    logLevel: "all",
+    logSearch: "",
+    logAutoScroll: true,
+    progressStartedAt: 0,
+    progressLastError: "",
 };
 
 const particles = {
@@ -54,7 +62,6 @@ const glowSelector = [
     ".tabs",
     ".panel",
     ".hero-panel",
-    ".metric-card",
     ".system-card",
     ".trend-card",
     ".config-group",
@@ -329,6 +336,8 @@ function openDialog(options = {}) {
     modal.classList.toggle("is-progress", Boolean(options.progress));
 
     if (options.progress) {
+        state.progressStartedAt = Date.now();
+        state.progressLastError = "";
         const list = document.createElement("div");
         list.className = "progress-steps";
         (options.steps || []).forEach((step, index) => {
@@ -347,6 +356,13 @@ function openDialog(options = {}) {
             list.appendChild(item);
         });
         body.appendChild(list);
+        const meter = document.createElement("div");
+        meter.className = "progress-meter";
+        meter.innerHTML = `<span></span>`;
+        const summary = document.createElement("div");
+        summary.className = "progress-summary";
+        summary.textContent = "准备执行...";
+        body.append(meter, summary);
     } else if (options.fields?.length) {
         const form = document.createElement("form");
         form.className = "dialog-form";
@@ -404,6 +420,15 @@ function setProgressStep(index, status = "active", message = "") {
     item.classList.add(status === "done" ? "is-done" : status === "error" ? "is-error" : "is-active");
     const small = item.querySelector("small");
     if (small) small.textContent = message || (status === "done" ? "完成" : status === "error" ? "失败" : "进行中...");
+    if (status === "error") state.progressLastError = message || "操作失败";
+    const steps = $$("#interactionModal .progress-step");
+    const done = steps.filter((step) => step.classList.contains("is-done")).length;
+    const activeIndex = steps.findIndex((step) => step.classList.contains("is-active"));
+    const progress = steps.length ? ((done + (activeIndex >= 0 ? 0.35 : 0)) / steps.length) * 100 : 0;
+    const bar = $("#interactionModal .progress-meter span");
+    if (bar) bar.style.width = `${Math.max(5, Math.min(100, progress))}%`;
+    const summary = $("#interactionModal .progress-summary");
+    if (summary) summary.textContent = message || (status === "done" ? "步骤完成" : status === "error" ? "步骤失败" : "正在执行...");
 }
 
 function openProgressDialog(title, steps, text = "") {
@@ -419,7 +444,32 @@ function openProgressDialog(title, steps, text = "") {
 }
 
 function finishProgressDialog(message, type = "success") {
+    const elapsed = state.progressStartedAt ? Math.max(0, Math.round((Date.now() - state.progressStartedAt) / 1000)) : 0;
     $("#dialogText").textContent = message;
+    const summary = $("#interactionModal .progress-summary");
+    if (summary) {
+        summary.textContent = `${type === "error" ? "操作失败" : "操作完成"} · 耗时 ${elapsed} 秒`;
+    }
+    const bar = $("#interactionModal .progress-meter span");
+    if (bar && type !== "error") bar.style.width = "100%";
+    const body = $("#dialogBody");
+    const oldCopy = $("#interactionModal .copy-error-btn");
+    if (oldCopy) oldCopy.remove();
+    if (type === "error" && body) {
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "secondary copy-error-btn";
+        copy.textContent = "复制错误日志";
+        copy.addEventListener("click", async () => {
+            try {
+                await navigator.clipboard.writeText(state.progressLastError || message || "操作失败");
+                showToast("错误日志已复制", "success");
+            } catch {
+                showToast("复制失败，请手动选择错误文本", "warn");
+            }
+        });
+        body.appendChild(copy);
+    }
     const submit = $("#dialogSubmit");
     submit.textContent = "完成";
     submit.style.display = "";
@@ -445,7 +495,7 @@ function flashMetric(id, nextValue) {
     const previous = state.lastMetricValues[id];
     state.lastMetricValues[id] = nextValue;
     if (previous === undefined || previous === nextValue) return;
-    const card = element.closest(".metric-card");
+    const card = element.closest(".cockpit-card, .system-card, .server-chip");
     if (!card) return;
     card.classList.remove("is-flashing");
     void card.offsetWidth;
@@ -456,11 +506,44 @@ function prefersReducedMotion() {
     return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+function resolvedTheme(theme = state.theme) {
+    if (theme !== "system") return theme;
+    const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    return dark ? "dark" : "light";
+}
+
+function applyPreferences() {
+    const theme = resolvedTheme();
+    document.body.dataset.theme = theme;
+    document.body.dataset.motion = state.motion;
+    $("#themeSelect") && ($("#themeSelect").value = state.theme);
+    $("#motionSelect") && ($("#motionSelect").value = state.motion);
+    if (particles.canvas) {
+        resizeParticles();
+    }
+}
+
+function setTheme(value) {
+    state.theme = value;
+    localStorage.setItem("palworld-panel-theme", value);
+    applyPreferences();
+}
+
+function setMotion(value) {
+    state.motion = value;
+    localStorage.setItem("palworld-panel-motion", value);
+    applyPreferences();
+}
+
 function particleCountForViewport(width, height) {
+    if (prefersReducedMotion() || state.motion === "off") return 0;
     const area = width * height;
     const isSmall = width < 720;
-    const base = Math.round(area / (isSmall ? 17000 : 9200));
-    return Math.max(isSmall ? 38 : 92, Math.min(isSmall ? 88 : 230, base));
+    const divisor = state.motion === "light" ? (isSmall ? 26000 : 16000) : (isSmall ? 17000 : 9200);
+    const base = Math.round(area / divisor);
+    const min = state.motion === "light" ? (isSmall ? 20 : 52) : (isSmall ? 38 : 92);
+    const max = state.motion === "light" ? (isSmall ? 48 : 130) : (isSmall ? 88 : 230);
+    return Math.max(min, Math.min(max, base));
 }
 
 function createParticle(width, height, initial = false) {
@@ -690,6 +773,33 @@ async function api(path, options = {}) {
     return data;
 }
 
+function updateTabIndicator() {
+    const tabs = $(".tabs");
+    const active = $(".tab-button.is-active");
+    if (!tabs || !active) return;
+    const tabRect = tabs.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    const x = activeRect.left - tabRect.left + tabs.scrollLeft;
+    tabs.style.setProperty("--tab-x", `${Math.round(x)}px`);
+    tabs.style.setProperty("--tab-w", `${Math.round(activeRect.width)}px`);
+}
+
+function setRing(id, percent, label) {
+    const ring = $(`#${id}`);
+    if (!ring) return;
+    const value = Math.max(0, Math.min(100, Number(percent || 0)));
+    ring.style.setProperty("--value", value.toFixed(1));
+    const text = ring.querySelector("span");
+    if (text) text.textContent = label || `${Math.round(value)}%`;
+}
+
+function setUsageCard(id, percent) {
+    const card = $(`#${id}`)?.closest(".system-card");
+    if (!card) return;
+    const value = Math.max(0, Math.min(100, Number(percent || 0)));
+    card.style.setProperty("--usage", `${value}%`);
+}
+
 function switchTab(tab) {
     if (state.currentTab === tab) return;
     if (state.tabTransitionTimer) {
@@ -703,6 +813,7 @@ function switchTab(tab) {
 
     state.currentTab = tab;
     $$(".tab-button").forEach((button) => button.classList.toggle("is-active", button.dataset.tab === tab));
+    updateTabIndicator();
 
     $$(".tab-panel").forEach((panel) => {
         panel.classList.remove("is-entering", "is-leaving");
@@ -744,14 +855,15 @@ function renderStatus(data) {
     const gameVersion = info.game_version || "-";
     const gamePort = info.port || "-";
     const playerCount = `${playerTotal} / ${maxPlayers}`;
-    $("#statusText").textContent = statusText;
+    const maxPlayerNumber = Math.max(0, Number(maxPlayers || 0));
+    const playerPercent = maxPlayerNumber ? (playerTotal / maxPlayerNumber) * 100 : 0;
     $("#gameVersion").textContent = gameVersion;
     $("#gamePort").textContent = gamePort;
-    $("#playerCount").textContent = playerCount;
-    flashMetric("statusText", statusText);
-    flashMetric("gameVersion", gameVersion);
-    flashMetric("gamePort", gamePort);
-    flashMetric("playerCount", playerCount);
+    $("#cockpitStatus") && ($("#cockpitStatus").textContent = statusText);
+    $("#cockpitBackend") && ($("#cockpitBackend").textContent = `后端：${status.backend === "docker" ? "Docker" : "systemd"}`);
+    $("#playerRingCount") && ($("#playerRingCount").textContent = playerCount);
+    $("#playerRingValue") && ($("#playerRingValue").textContent = `${Math.round(playerPercent)}%`);
+    setRing("playerRing", playerPercent);
     $("#serverName").textContent = info.server_name || "-";
     $("#serverDesc").textContent = info.server_description || "暂无服务器描述";
     const backendText = status.backend === "docker" ? "Docker" : "systemd";
@@ -885,6 +997,13 @@ function renderSystem(data) {
     $("#systemDiskDetail").textContent = `${formatBytes(disk.used)} / ${formatBytes(disk.total)}`;
     $("#systemUptime").textContent = formatDuration(system.uptime_seconds);
     $("#systemUpdated").textContent = `已刷新：${new Date().toLocaleTimeString()}`;
+    setUsageCard("systemCpu", cpu);
+    setUsageCard("systemMemory", memoryPercent);
+    setUsageCard("systemDisk", diskPercent);
+    setUsageCard("systemUptime", 100);
+    setRing("cpuRing", Number(cpu || 0), cpu == null ? "-" : `${Math.round(Number(cpu))}%`);
+    $("#cpuRingText") && ($("#cpuRingText").textContent = cpu == null ? "-" : `${cpu}%`);
+    $("#cpuRingLoad") && ($("#cpuRingLoad").textContent = `负载：${load.length ? load.join(" / ") : "-"}`);
 
     appendSystemHistory(system);
     renderSystemCharts();
@@ -956,7 +1075,7 @@ async function refreshAll() {
     if (state.currentTab === "log" || state.logAutoRefresh) {
         loadLog();
     }
-    if (state.currentTab === "saves") {
+    if (state.currentTab === "dashboard" || state.currentTab === "saves") {
         loadSaves(false);
     }
     if (state.currentTab === "mods") {
@@ -1015,21 +1134,31 @@ async function loadLog() {
     const log = $("#logContainer");
     try {
         const data = await api("/api/log?lines=80");
-        renderLogLines(data.lines || []);
-        log.scrollTop = log.scrollHeight;
+        state.rawLogLines = data.lines || [];
+        renderLogLines();
+        if (state.logAutoScroll) log.scrollTop = log.scrollHeight;
     } catch (error) {
-        renderLogLines([error.message]);
+        state.rawLogLines = [error.message];
+        renderLogLines();
     }
 }
 
-function renderLogLines(lines) {
+function renderLogLines() {
     const log = $("#logContainer");
-    log.replaceChildren(...(lines.length ? lines : ["暂无日志"]).map((line) => {
+    const search = state.logSearch.trim().toLowerCase();
+    const lines = (state.rawLogLines || []).filter((line) => {
+        const level = classifyLogLine(line) || "info";
+        const matchesLevel = state.logLevel === "all" || level === state.logLevel;
+        const matchesSearch = !search || String(line).toLowerCase().includes(search);
+        return matchesLevel && matchesSearch;
+    });
+    log.replaceChildren(...(lines.length ? lines : ["暂无匹配日志"]).map((line) => {
         const row = document.createElement("span");
         row.className = `log-line ${classifyLogLine(line)}`.trim();
         row.textContent = line;
         return row;
     }));
+    if (state.logAutoScroll) log.scrollTop = log.scrollHeight;
 }
 
 function classifyLogLine(line) {
@@ -1869,6 +1998,21 @@ function toggleLogAutoRefresh() {
     $("#logAutoBtn").classList.toggle("is-on", state.logAutoRefresh);
 }
 
+function toggleLogAutoScroll() {
+    state.logAutoScroll = !state.logAutoScroll;
+    $("#logScrollBtn").textContent = state.logAutoScroll ? "自动滚动：开" : "自动滚动：关";
+    $("#logScrollBtn").classList.toggle("is-on", state.logAutoScroll);
+    renderLogLines();
+}
+
+function setLogLevel(level) {
+    state.logLevel = level;
+    $$(".terminal-filter").forEach((button) => {
+        button.classList.toggle("is-active", button.dataset.logLevel === level);
+    });
+    renderLogLines();
+}
+
 function renderConfigForm() {
     const container = $("#configSections");
     container.replaceChildren(...configGroups.map((group) => {
@@ -1893,13 +2037,57 @@ function renderConfigForm() {
     }));
 }
 
+function isRateField(key, meta) {
+    return meta && typeof meta === "object" && (key.includes("Rate") || key.includes("Speed") || key.includes("Span"));
+}
+
+function syncFieldState(input) {
+    if (!input || !input.dataset.key) return;
+    const field = input.closest(".field");
+    if (!field) return;
+    const key = input.dataset.key;
+    const defaultValue = normalizeSubmitValue(key, configDefaults[key]);
+    const currentValue = normalizeSubmitValue(key, input.value);
+    const range = field.querySelector("input[type='range']");
+    const defaultBadge = field.querySelector("[data-default-badge]");
+    if (range && range.value !== input.value) range.value = input.value;
+    if (defaultBadge) {
+        defaultBadge.textContent = String(currentValue) === String(defaultValue) ? "默认值" : "已自定义";
+        defaultBadge.classList.toggle("is-default", String(currentValue) === String(defaultValue));
+    }
+}
+
 function createField([key, label, type, meta]) {
     const wrapper = document.createElement("div");
     wrapper.className = "field";
+    if (meta && typeof meta === "object" && (meta.hint || "").includes("性能压力")) wrapper.classList.add("is-risk");
 
     const labelEl = document.createElement("label");
     labelEl.htmlFor = `cfg_${key}`;
-    labelEl.textContent = label;
+    const labelText = document.createElement("span");
+    labelText.textContent = label;
+    const badgeRow = document.createElement("span");
+    badgeRow.className = "field-badges";
+    if (configDefaults[key] !== undefined) {
+        const defaultBadge = document.createElement("b");
+        defaultBadge.dataset.defaultBadge = "true";
+        defaultBadge.textContent = "默认值";
+        badgeRow.appendChild(defaultBadge);
+    }
+    const recommendValue = meta && typeof meta === "object" && (meta.recommend ?? configDefaults[key]);
+    if (recommendValue !== undefined && recommendValue !== null && recommendValue !== "") {
+        const recBadge = document.createElement("b");
+        recBadge.className = "is-recommend";
+        recBadge.textContent = `推荐 ${stripQuotes(recommendValue)}`;
+        badgeRow.appendChild(recBadge);
+    }
+    if (wrapper.classList.contains("is-risk")) {
+        const riskBadge = document.createElement("b");
+        riskBadge.className = "is-risk";
+        riskBadge.textContent = "高影响";
+        badgeRow.appendChild(riskBadge);
+    }
+    labelEl.append(labelText, badgeRow);
     wrapper.appendChild(labelEl);
 
     let input;
@@ -1933,6 +2121,31 @@ function createField([key, label, type, meta]) {
     input.id = `cfg_${key}`;
     input.dataset.key = key;
     wrapper.appendChild(input);
+    input.addEventListener("input", () => syncFieldState(input));
+
+    if (type === "number" && isRateField(key, meta)) {
+        const control = document.createElement("div");
+        control.className = "field-slider-row";
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = input.min || "0";
+        slider.max = input.max || "10";
+        slider.step = input.step || "0.1";
+        slider.addEventListener("input", () => {
+            input.value = slider.value;
+            syncFieldState(input);
+        });
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.className = "field-reset";
+        reset.textContent = "重置";
+        reset.addEventListener("click", () => {
+            input.value = stripQuotes(configDefaults[key] ?? "");
+            syncFieldState(input);
+        });
+        control.append(slider, reset);
+        wrapper.appendChild(control);
+    }
 
     if (meta && typeof meta === "object" && meta.hint) {
         const hint = document.createElement("p");
@@ -1954,6 +2167,7 @@ async function loadConfig() {
             const value = settings[input.dataset.key];
             input.value = stripQuotes(value);
             state.currentConfig[input.dataset.key] = normalizeSubmitValue(input.dataset.key, value);
+            syncFieldState(input);
         });
     } catch (error) {
         setMessage($("#configMsg"), `读取配置失败：${error.message}`, "error");
@@ -1971,7 +2185,8 @@ function collectConfig() {
 
 function getFieldLabel(key) {
     const input = $$("[data-key]").find((field) => field.dataset.key === key);
-    return input?.closest(".field")?.querySelector("label")?.textContent || key;
+    const label = input?.closest(".field")?.querySelector("label");
+    return label?.querySelector("span:first-child")?.textContent || label?.textContent || key;
 }
 
 function formatDiffValue(key, value) {
@@ -1991,6 +2206,10 @@ function getConfigDiff(nextConfig) {
         }));
 }
 
+function getConfigGroupTitle(key) {
+    return configGroups.find((group) => group.fields.some((field) => field[0] === key))?.title || "其他配置";
+}
+
 function showConfigDiffConfirm(diffs, restart) {
     const modal = $("#configConfirmModal");
     const list = $("#configDiffList");
@@ -2000,25 +2219,40 @@ function showConfigDiffConfirm(diffs, restart) {
         : "这些改动会保存到配置文件，重启 Palworld 后生效。";
     $("#configConfirmSubmit").textContent = restart ? "确认保存并重启" : "确认保存";
 
-    list.replaceChildren(...diffs.map((diff) => {
-        const item = document.createElement("div");
-        item.className = "diff-item";
+    const groups = new Map();
+    diffs.forEach((diff) => {
+        const title = getConfigGroupTitle(diff.key);
+        if (!groups.has(title)) groups.set(title, []);
+        groups.get(title).push(diff);
+    });
 
-        const label = document.createElement("span");
-        label.className = "diff-label";
-        label.textContent = diff.label;
-        item.appendChild(label);
+    list.replaceChildren(...Array.from(groups.entries()).map(([titleText, groupDiffs]) => {
+        const group = document.createElement("section");
+        group.className = "diff-group";
+        const title = document.createElement("h3");
+        title.textContent = titleText;
+        group.appendChild(title);
+        groupDiffs.forEach((diff) => {
+            const item = document.createElement("div");
+            item.className = "diff-item";
 
-        const values = document.createElement("div");
-        values.className = "diff-values";
-        [diff.oldValue, "→", diff.newValue].forEach((value, index) => {
-            const node = document.createElement("span");
-            node.className = index === 1 ? "diff-arrow" : "diff-value";
-            node.textContent = value;
-            values.appendChild(node);
+            const label = document.createElement("span");
+            label.className = "diff-label";
+            label.textContent = diff.label;
+            item.appendChild(label);
+
+            const values = document.createElement("div");
+            values.className = "diff-values";
+            [diff.oldValue, "→", diff.newValue].forEach((value, index) => {
+                const node = document.createElement("span");
+                node.className = index === 1 ? "diff-arrow" : "diff-value";
+                node.textContent = value;
+                values.appendChild(node);
+            });
+            item.appendChild(values);
+            group.appendChild(item);
         });
-        item.appendChild(values);
-        return item;
+        return group;
     }));
 
     modal.classList.add("is-open");
@@ -2260,9 +2494,17 @@ function createSaveMeta(label, value) {
 
 function renderSaveStatus() {
     const card = $("#activeSaveCard");
-    if (!card) return;
     const active = state.saveStatus?.active || {};
     const service = state.saveStatus?.service || {};
+    const dashboardWorld = $("#dashboardSaveWorld");
+    const dashboardMeta = $("#dashboardSaveMeta");
+    if (dashboardWorld) dashboardWorld.textContent = active.world_id || "未检测到";
+    if (dashboardMeta) {
+        dashboardMeta.textContent = active.world_id
+            ? `${formatBytes(active.size_bytes)} · ${formatOptional(active.updated_at)}`
+            : "等待存档状态";
+    }
+    if (!card) return;
 
     const title = document.createElement("div");
     const eyebrow = document.createElement("p");
@@ -2290,6 +2532,29 @@ function renderSaveStatus() {
     card.replaceChildren(title, badge, meta);
 }
 
+function saveTimelineGroup(slot) {
+    const raw = slot.last_used_at || slot.updated_at || slot.created_at;
+    if (!raw) return "更早";
+    const normalized = String(raw).replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) return "更早";
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startYesterday = startToday - 86400000;
+    const time = date.getTime();
+    if (time >= startToday) return "今天";
+    if (time >= startYesterday) return "昨天";
+    return "更早";
+}
+
+function saveSourceLabel(slot) {
+    if (slot.is_active) return "当前使用";
+    if (slot.is_same_world_copy) return "同世界副本";
+    if (slot.source === "imported") return "导入";
+    if (slot.is_new) return "新世界";
+    return "备用";
+}
+
 function renderSaveSlots() {
     const list = $("#saveSlotList");
     if (!list) return;
@@ -2302,7 +2567,21 @@ function renderSaveSlots() {
         return;
     }
 
-    list.replaceChildren(...slots.map((slot) => {
+    const groups = new Map();
+    slots.forEach((slot) => {
+        const group = slot.is_active ? "主存档保险箱" : saveTimelineGroup(slot);
+        if (!groups.has(group)) groups.set(group, []);
+        groups.get(group).push(slot);
+    });
+
+    const groupOrder = ["主存档保险箱", "今天", "昨天", "更早"];
+    list.replaceChildren(...groupOrder.filter((group) => groups.has(group)).map((group) => {
+        const section = document.createElement("section");
+        section.className = "save-timeline-group";
+        const heading = document.createElement("h3");
+        heading.textContent = group;
+        section.appendChild(heading);
+        groups.get(group).forEach((slot) => {
         const card = document.createElement("article");
         card.className = `save-slot-card ${slot.is_active ? "is-active" : ""}`.trim();
 
@@ -2318,9 +2597,7 @@ function renderSaveSlots() {
 
         const badge = document.createElement("span");
         badge.className = `soft-pill ${slot.is_active ? "is-success" : ""}`.trim();
-        badge.textContent = slot.is_active
-            ? "当前使用"
-            : (slot.is_same_world_copy ? "同世界副本" : (slot.source === "imported" ? "导入" : "备用"));
+        badge.textContent = saveSourceLabel(slot);
         header.append(heading, badge);
 
         const meta = document.createElement("div");
@@ -2329,7 +2606,8 @@ function renderSaveSlots() {
             createSaveMeta("槽 ID", slot.id),
             createSaveMeta("大小", formatBytes(slot.size_bytes)),
             createSaveMeta("更新时间", formatOptional(slot.updated_at)),
-            createSaveMeta("最近使用", formatOptional(slot.last_used_at, "未使用"))
+            createSaveMeta("最近使用", formatOptional(slot.last_used_at, "未使用")),
+            createSaveMeta("来源", saveSourceLabel(slot))
         );
 
         const notes = document.createElement("p");
@@ -2347,16 +2625,23 @@ function renderSaveSlots() {
         switchButton.addEventListener("click", () => switchSaveSlot(slot.id, slot.name || slot.id));
 
         const deleteButton = document.createElement("button");
-        deleteButton.className = "secondary danger-soft";
+        deleteButton.className = "save-more-action";
         deleteButton.type = "button";
         deleteButton.textContent = "删除";
         deleteButton.disabled = slot.is_active;
         deleteButton.dataset.locked = slot.is_active ? "true" : "false";
         deleteButton.addEventListener("click", () => deleteSaveSlot(slot.id, slot.name || slot.id));
-        actions.append(switchButton, deleteButton);
+        const more = document.createElement("details");
+        more.className = "save-more";
+        const summary = document.createElement("summary");
+        summary.textContent = "更多";
+        more.append(summary, deleteButton);
+        actions.append(switchButton, more);
 
         card.append(header, meta, notes, actions);
-        return card;
+        section.appendChild(card);
+        });
+        return section;
     }));
 }
 
@@ -2608,9 +2893,12 @@ async function sendRcon(event) {
     const input = $("#rconInput");
     const command = input.value.trim();
     if (!command) return;
-
-    appendConsoleLine(`> ${command}`, "command");
     input.value = "";
+    await executeRconCommand(command);
+}
+
+async function executeRconCommand(command) {
+    appendConsoleLine(`> ${command}`, "command");
 
     try {
         const data = await api("/api/rcon", {
@@ -2625,10 +2913,38 @@ async function sendRcon(event) {
     }
 }
 
+async function quickRconCommand(command) {
+    if (command === "Broadcast") {
+        const values = await openDialog({
+            eyebrow: "Broadcast",
+            title: "广播消息",
+            text: "向当前服务器内玩家发送一条公告。",
+            submitText: "发送广播",
+            fields: [
+                { name: "message", label: "广播内容", required: true, placeholder: "服务器将在 5 分钟后重启" },
+            ],
+        });
+        if (!values) return;
+        await executeRconCommand(`Broadcast ${values.message.trim()}`);
+        return;
+    }
+    await executeRconCommand(command);
+}
+
 function bindEvents() {
     $("#refreshBtn").addEventListener("click", refreshAll);
+    $("#themeSelect")?.addEventListener("change", (event) => setTheme(event.target.value));
+    $("#motionSelect")?.addEventListener("change", (event) => setMotion(event.target.value));
     $("#loadLogBtn").addEventListener("click", loadLog);
     $("#logAutoBtn").addEventListener("click", toggleLogAutoRefresh);
+    $("#logScrollBtn")?.addEventListener("click", toggleLogAutoScroll);
+    $("#logSearchInput")?.addEventListener("input", (event) => {
+        state.logSearch = event.target.value;
+        renderLogLines();
+    });
+    $$(".terminal-filter").forEach((button) => {
+        button.addEventListener("click", () => setLogLevel(button.dataset.logLevel));
+    });
     $("#refreshSavesBtn").addEventListener("click", () => loadSaves(true));
     $("#backupCurrentSaveBtn").addEventListener("click", backupCurrentSave);
     $("#createSaveSlotBtn").addEventListener("click", createSaveSlot);
@@ -2671,18 +2987,28 @@ function bindEvents() {
         }
     });
     $("#rconForm").addEventListener("submit", sendRcon);
+    $$(".quick-command").forEach((button) => {
+        button.addEventListener("click", () => quickRconCommand(button.dataset.rconCommand));
+    });
     $$(".tab-button").forEach((button) => {
         button.addEventListener("click", () => switchTab(button.dataset.tab));
     });
     $$("[data-action]").forEach((button) => {
         button.addEventListener("click", () => serverAction(button.dataset.action));
     });
-    window.addEventListener("resize", renderSystemCharts);
+    $(".tabs")?.addEventListener("scroll", updateTabIndicator, { passive: true });
+    window.addEventListener("resize", () => {
+        renderSystemCharts();
+        updateTabIndicator();
+    });
+    window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", applyPreferences);
 }
 
 renderConfigForm();
+applyPreferences();
 initParticles();
 initCursorGlow();
 bindEvents();
+updateTabIndicator();
 refreshAll();
 setInterval(refreshAll, 10000);

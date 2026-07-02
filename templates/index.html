@@ -16,12 +16,29 @@
                 <h1>服务器管理面板</h1>
             </div>
             <div class="topbar-actions">
+                <label class="shell-select">
+                    <span>主题</span>
+                    <select id="themeSelect" aria-label="主题">
+                        <option value="system">跟随系统</option>
+                        <option value="light">浅色玻璃</option>
+                        <option value="dark">深色星空</option>
+                    </select>
+                </label>
+                <label class="shell-select">
+                    <span>动效</span>
+                    <select id="motionSelect" aria-label="动效强度">
+                        <option value="luxe">华丽</option>
+                        <option value="light">轻量</option>
+                        <option value="off">关闭</option>
+                    </select>
+                </label>
                 <span id="statusBadge" class="status-pill is-loading">检测中</span>
                 <button id="refreshBtn" class="icon-button" type="button" aria-label="刷新">刷新</button>
             </div>
         </header>
 
         <nav class="tabs" aria-label="面板导航">
+            <span class="tab-indicator" aria-hidden="true"></span>
             <button class="tab-button is-active" type="button" data-tab="dashboard">仪表盘</button>
             <button class="tab-button" type="button" data-tab="players">在线玩家</button>
             <button class="tab-button" type="button" data-tab="log">实时日志</button>
@@ -37,11 +54,18 @@
         <main>
             <section id="tab-dashboard" class="tab-panel is-active">
                 <div class="hero-panel">
+                    <div class="hero-map" aria-hidden="true"></div>
+                    <div class="hero-pulse hero-pulse-a" aria-hidden="true"></div>
+                    <div class="hero-pulse hero-pulse-b" aria-hidden="true"></div>
                     <div>
                         <p class="eyebrow">Current Server</p>
                         <h2 id="serverName">加载中...</h2>
                         <p id="serverDesc" class="muted">正在读取服务器信息</p>
                         <p id="serverUptime" class="small muted">-</p>
+                        <div class="server-chip-row" aria-label="服务器详情">
+                            <span class="server-chip">版本 <b id="gameVersion">-</b></span>
+                            <span class="server-chip">端口 <b id="gamePort">-</b></span>
+                        </div>
                     </div>
                     <div class="hero-actions">
                         <button class="primary success" type="button" data-action="start">启动</button>
@@ -50,22 +74,36 @@
                     </div>
                 </div>
 
-                <div class="metric-grid">
-                    <article class="metric-card">
-                        <span>服务器状态</span>
-                        <strong id="statusText">检测中</strong>
+                <div class="cockpit-grid" aria-label="运维驾驶舱摘要">
+                    <article class="cockpit-card cockpit-status">
+                        <span>运行状态</span>
+                        <strong id="cockpitStatus">检测中</strong>
+                        <small id="cockpitBackend">后端：-</small>
                     </article>
-                    <article class="metric-card">
-                        <span>游戏版本</span>
-                        <strong id="gameVersion">-</strong>
+                    <article class="cockpit-card has-ring">
+                        <div class="ring-gauge" id="playerRing" style="--value:0">
+                            <span id="playerRingValue">0%</span>
+                        </div>
+                        <div>
+                            <span>在线玩家</span>
+                            <strong id="playerRingCount">0 / 0</strong>
+                            <small>容量占用</small>
+                        </div>
                     </article>
-                    <article class="metric-card">
-                        <span>游戏端口</span>
-                        <strong id="gamePort">-</strong>
+                    <article class="cockpit-card has-ring">
+                        <div class="ring-gauge" id="cpuRing" style="--value:0">
+                            <span id="cpuRingValue">-</span>
+                        </div>
+                        <div>
+                            <span>CPU</span>
+                            <strong id="cpuRingText">-</strong>
+                            <small id="cpuRingLoad">负载：-</small>
+                        </div>
                     </article>
-                    <article class="metric-card">
-                        <span>在线 / 最大人数</span>
-                        <strong id="playerCount">0 / 0</strong>
+                    <article class="cockpit-card save-vault">
+                        <span>当前存档</span>
+                        <strong id="dashboardSaveWorld">-</strong>
+                        <small id="dashboardSaveMeta">等待存档状态</small>
                     </article>
                 </div>
 
@@ -160,6 +198,16 @@
                             <button class="secondary is-on" type="button" id="logAutoBtn">自动刷新：开</button>
                         </div>
                     </div>
+                    <div class="terminal-toolbar">
+                        <input id="logSearchInput" type="search" placeholder="搜索日志关键字">
+                        <div class="terminal-filters" aria-label="日志级别筛选">
+                            <button class="terminal-filter is-active" type="button" data-log-level="all">全部</button>
+                            <button class="terminal-filter" type="button" data-log-level="error">Error</button>
+                            <button class="terminal-filter" type="button" data-log-level="warn">Warn</button>
+                            <button class="terminal-filter" type="button" data-log-level="success">Success</button>
+                        </div>
+                        <button class="secondary is-on" type="button" id="logScrollBtn">自动滚动：开</button>
+                    </div>
                     <pre id="logContainer" class="log-box">加载中...</pre>
                 </div>
             </section>
@@ -253,6 +301,12 @@
                         <input id="rconInput" autocomplete="off" placeholder="ShowPlayers / Info / Broadcast 消息">
                         <button class="primary" type="submit">发送</button>
                     </form>
+                    <div class="quick-command-row" aria-label="RCON 快捷命令">
+                        <button class="quick-command" type="button" data-rcon-command="Info">Info</button>
+                        <button class="quick-command" type="button" data-rcon-command="ShowPlayers">ShowPlayers</button>
+                        <button class="quick-command" type="button" data-rcon-command="Save">Save</button>
+                        <button class="quick-command" type="button" data-rcon-command="Broadcast">Broadcast</button>
+                    </div>
                     <div id="rconOutput" class="console-output">等待命令...</div>
                 </div>
             </section>
