@@ -847,11 +847,21 @@ function renderStatus(data) {
     const playerTotal = players.length;
     const maxPlayers = info.max_players || "0";
     const statusBadge = $("#statusBadge");
+    const dockerPending = status.backend === "docker" && status.container_running && !status.ready;
+    const phaseLabels = {
+        installing: "安装中",
+        retrying: "重试中",
+        steamcmd: "安装中",
+        starting: "启动中",
+        failed: "安装失败",
+        error: "异常",
+    };
+    const statusText = dockerPending ? (phaseLabels[status.phase] || "准备中") : (status.running ? "运行中" : "已停止");
+    const statusClass = dockerPending && status.phase !== "failed" && status.phase !== "error" ? "is-loading" : status.running ? "is-online" : "is-offline";
 
-    statusBadge.textContent = status.running ? "运行中" : "已停止";
-    statusBadge.className = `status-pill ${status.running ? "is-online" : "is-offline"}`;
+    statusBadge.textContent = statusText;
+    statusBadge.className = `status-pill ${statusClass}`;
 
-    const statusText = status.running ? "运行中" : "已停止";
     const gameVersion = info.game_version || "-";
     const gamePort = info.port || "-";
     const playerCount = `${playerTotal} / ${maxPlayers}`;
@@ -865,7 +875,7 @@ function renderStatus(data) {
     $("#playerRingValue") && ($("#playerRingValue").textContent = `${Math.round(playerPercent)}%`);
     setRing("playerRing", playerPercent);
     $("#serverName").textContent = info.server_name || "-";
-    $("#serverDesc").textContent = info.server_description || "暂无服务器描述";
+    $("#serverDesc").textContent = dockerPending ? (status.message || "Docker 正在准备 Palworld 服务端") : (info.server_description || "暂无服务器描述");
     const backendText = status.backend === "docker" ? "Docker" : "systemd";
     $("#serverUptime").textContent = status.start_time ? `模式：${backendText} · 启动时间：${status.start_time}` : `模式：${backendText}`;
     $("#playerCountBadge").textContent = `${playerTotal} 人`;

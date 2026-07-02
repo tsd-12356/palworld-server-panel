@@ -222,6 +222,70 @@ def docker_container_logs(lines: int = 80) -> list[str]:
         return [f"Unable to read Docker logs: {exc}"]
 
 
+def docker_exec_shell(command: str, timeout: int = 8) -> tuple[int, str]:
+    try:
+        container = get_docker_container()
+        result = container.exec_run(["/bin/sh", "-lc", command], stdout=True, stderr=True, demux=False, tty=False)
+        output = result.output.decode("utf-8", errors="replace") if isinstance(result.output, bytes) else str(result.output)
+        return int(result.exit_code or 0), output.strip()
+    except Exception as exc:
+        return -1, str(exc)
+
+
+def read_docker_install_marker() -> dict[str, Any]:
+    marker = PALWORLD_DIR / ".panel-install-status.json"
+    try:
+        if marker.exists():
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def get_docker_game_state() -> dict[str, Any]:
+    container = get_docker_container()
+    container.reload()
+    state = container.attrs.get("State", {})
+    container_running = container.status == "running"
+    installed = (PALWORLD_DIR / "PalServer.sh").exists()
+    marker = read_docker_install_marker()
+    pal_process = False
+    process_text = ""
+
+    if container_running:
+        code, output = docker_exec_shell(
+            r'''for f in /proc/[0-9]*/cmdline; do cmd="$(tr '\0' ' ' < "$f" 2>/dev/null || true)"; case "$cmd" in *PalServer*) echo "$cmd"; exit 0;; esac; done; exit 1'''
+        )
+        pal_process = code == 0
+        process_text = output
+
+    if not container_running:
+        phase = "stopped"
+        message = "Palworld container is stopped"
+    elif pal_process and installed:
+        phase = "running"
+        message = "Palworld server is running"
+    elif installed:
+        phase = "starting"
+        message = marker.get("message") or "Palworld files are installed; server is starting"
+    else:
+        phase = str(marker.get("phase") or "installing")
+        message = str(marker.get("message") or "Palworld files are being installed by SteamCMD")
+
+    return {
+        "running": container_running and installed and pal_process,
+        "container_running": container_running,
+        "installed": installed,
+        "ready": container_running and installed and pal_process,
+        "phase": phase,
+        "message": message,
+        "process": process_text,
+        "pid": str(state.get("Pid") or ""),
+        "start_time": state.get("StartedAt", "") if container_running else "",
+    }
+
+
 def parse_palworld_settings(text: str | None = None) -> dict[str, str]:
     """Parse PalWorldSettings.ini's OptionSettings line into a dict."""
     if text is None:
@@ -498,27 +562,49 @@ def start_update_service() -> tuple[bool, str]:
 
 def read_install_status() -> dict[str, Any]:
     if using_docker_backend():
+        try:
+            game_state = get_docker_game_state()
+        except Exception as exc:
+            game_state = {
+                "running": False,
+                "container_running": False,
+                "installed": False,
+                "phase": "error",
+                "message": str(exc),
+            }
         checks = {
             "docker_backend": True,
-            "palworld_installed": (PALWORLD_DIR / "PalServer.sh").exists(),
+            "palworld_installed": bool(game_state["installed"]),
             "palworld_manifest": (PALWORLD_DIR / "steamapps" / "appmanifest_2394010.acf").exists(),
             "panel_installed": Path(__file__).exists(),
             "env_file": True,
-            "container_running": docker_container_running(),
+            "container_running": bool(game_state["container_running"]),
         }
+        installed = bool(game_state["installed"])
         return {
             "backend": "docker",
-            "running": False,
+            "running": bool(game_state["container_running"] and not installed),
             "service_active": False,
-            "phase": "docker",
-            "message": "Docker Compose 部署模式：安装和修复由容器启动脚本负责",
-            "success": True,
+            "phase": game_state["phase"],
+            "message": game_state["message"],
+            "success": game_state["phase"] != "failed",
             "panel_user": "container",
             "panel_dir": str(Path.cwd()),
             "palworld_dir": str(PALWORLD_DIR),
             "steamcmd": "inside palworld container",
             "checks": checks,
-            "steps": [],
+            "steps": [
+                {
+                    "name": "docker",
+                    "status": "done" if game_state["container_running"] else "error",
+                    "message": "Palworld container running" if game_state["container_running"] else "Palworld container stopped",
+                },
+                {
+                    "name": "install",
+                    "status": "done" if installed else "active",
+                    "message": "Palworld files installed" if installed else game_state["message"],
+                },
+            ],
             "log_tail": docker_container_logs(80),
         }
 
@@ -1678,16 +1764,18 @@ def rcon_command(command: str) -> str:
 def get_server_status() -> dict[str, Any]:
     if using_docker_backend():
         try:
-            container = get_docker_container()
-            container.reload()
-            state = container.attrs.get("State", {})
-            running = container.status == "running"
+            game_state = get_docker_game_state()
             return {
-                "running": running,
-                "pid": str(state.get("Pid") or ""),
-                "start_time": state.get("StartedAt", "") if running else "",
+                "running": game_state["running"],
+                "pid": game_state["pid"],
+                "start_time": game_state["start_time"] if game_state["container_running"] else "",
                 "service_name": PALWORLD_CONTAINER_NAME,
                 "backend": "docker",
+                "container_running": game_state["container_running"],
+                "installed": game_state["installed"],
+                "ready": game_state["ready"],
+                "phase": game_state["phase"],
+                "message": game_state["message"],
             }
         except Exception as exc:
             return {
@@ -1696,6 +1784,11 @@ def get_server_status() -> dict[str, Any]:
                 "start_time": "",
                 "service_name": PALWORLD_CONTAINER_NAME,
                 "backend": "docker",
+                "container_running": False,
+                "installed": False,
+                "ready": False,
+                "phase": "error",
+                "message": str(exc),
                 "error": str(exc),
             }
 
