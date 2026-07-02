@@ -243,6 +243,14 @@ def read_docker_install_marker() -> dict[str, Any]:
     return {}
 
 
+def tcp_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def get_docker_game_state() -> dict[str, Any]:
     container = get_docker_container()
     container.reload()
@@ -252,6 +260,7 @@ def get_docker_game_state() -> dict[str, Any]:
     marker = read_docker_install_marker()
     pal_process = False
     process_text = ""
+    rcon_ready = False
 
     if container_running:
         code, output = docker_exec_shell(
@@ -259,13 +268,17 @@ def get_docker_game_state() -> dict[str, Any]:
         )
         pal_process = code == 0
         process_text = output
+        rcon_ready = tcp_port_open(RCON_HOST, RCON_PORT)
 
     if not container_running:
         phase = "stopped"
         message = "Palworld container is stopped"
-    elif pal_process and installed:
+    elif pal_process and installed and rcon_ready:
         phase = "running"
         message = "Palworld server is running"
+    elif pal_process and installed:
+        phase = "starting"
+        message = "Palworld server is starting; waiting for RCON"
     elif installed:
         phase = "starting"
         message = marker.get("message") or "Palworld files are installed; server is starting"
@@ -273,11 +286,13 @@ def get_docker_game_state() -> dict[str, Any]:
         phase = str(marker.get("phase") or "installing")
         message = str(marker.get("message") or "Palworld files are being installed by SteamCMD")
 
+    ready = container_running and installed and pal_process and rcon_ready
     return {
-        "running": container_running and installed and pal_process,
+        "running": ready,
         "container_running": container_running,
         "installed": installed,
-        "ready": container_running and installed and pal_process,
+        "ready": ready,
+        "rcon_ready": rcon_ready,
         "phase": phase,
         "message": message,
         "process": process_text,
@@ -1774,6 +1789,7 @@ def get_server_status() -> dict[str, Any]:
                 "container_running": game_state["container_running"],
                 "installed": game_state["installed"],
                 "ready": game_state["ready"],
+                "rcon_ready": game_state["rcon_ready"],
                 "phase": game_state["phase"],
                 "message": game_state["message"],
             }
@@ -1787,6 +1803,7 @@ def get_server_status() -> dict[str, Any]:
                 "container_running": False,
                 "installed": False,
                 "ready": False,
+                "rcon_ready": False,
                 "phase": "error",
                 "message": str(exc),
                 "error": str(exc),

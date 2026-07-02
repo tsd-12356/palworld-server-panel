@@ -14,6 +14,9 @@ SERVER_MAX_PLAYERS="${SERVER_MAX_PLAYERS:-32}"
 STEAMCMD_RETRIES="${STEAMCMD_RETRIES:-8}"
 STEAMCMD_RETRY_DELAY="${STEAMCMD_RETRY_DELAY:-30}"
 PALWORLD_INSTALL_STATUS_FILE="${PALWORLD_INSTALL_STATUS_FILE:-${PALWORLD_DIR}/.panel-install-status.json}"
+PALWORLD_USER="${PALWORLD_USER:-palworld}"
+PALWORLD_UID="${PALWORLD_UID:-1000}"
+PALWORLD_GID="${PALWORLD_GID:-1000}"
 
 write_status() {
   local phase="$1"
@@ -44,17 +47,28 @@ fi
 
 mkdir -p "${STEAMCMD_DIR}" "${PALWORLD_DIR}"
 
+if ! getent group "${PALWORLD_USER}" >/dev/null 2>&1; then
+  groupadd --gid "${PALWORLD_GID}" "${PALWORLD_USER}"
+fi
+
+if ! id -u "${PALWORLD_USER}" >/dev/null 2>&1; then
+  useradd --uid "${PALWORLD_UID}" --gid "${PALWORLD_USER}" --create-home --shell /bin/bash "${PALWORLD_USER}"
+fi
+
+chown -R "${PALWORLD_USER}:${PALWORLD_USER}" "${STEAMCMD_DIR}" "${PALWORLD_DIR}"
+
 if [[ ! -x "${STEAMCMD_DIR}/steamcmd.sh" ]]; then
   echo "[entrypoint] Installing SteamCMD"
   write_status "steamcmd" "Installing SteamCMD"
   curl -fsSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" -o "${STEAMCMD_DIR}/steamcmd_linux.tar.gz"
   tar -xzf "${STEAMCMD_DIR}/steamcmd_linux.tar.gz" -C "${STEAMCMD_DIR}"
+  chown -R "${PALWORLD_USER}:${PALWORLD_USER}" "${STEAMCMD_DIR}"
 fi
 
 echo "[entrypoint] Installing/updating Palworld Dedicated Server"
 write_status "installing" "Installing/updating Palworld Dedicated Server"
 attempt=1
-until "${STEAMCMD_DIR}/steamcmd.sh" \
+until runuser -u "${PALWORLD_USER}" -- "${STEAMCMD_DIR}/steamcmd.sh" \
     +@sSteamCmdForcePlatformType linux \
     +@sSteamCmdForcePlatformBitness 64 \
     +force_install_dir "${PALWORLD_DIR}" \
@@ -124,6 +138,7 @@ for key, value in values.items():
 
 open(path, "w", encoding="utf-8").write(text)
 PY
+chown "${PALWORLD_USER}:${PALWORLD_USER}" "${SETTINGS_FILE}"
 
 if [[ ! -f "${GAME_USER_FILE}" ]]; then
   WORLD_ID="$(python3 - <<'PY'
@@ -136,8 +151,9 @@ PY
 DedicatedServerName=${WORLD_ID}
 EOF
 fi
+chown -R "${PALWORLD_USER}:${PALWORLD_USER}" "${CONFIG_DIR}" "${PALWORLD_DIR}/Pal/Saved"
 
 echo "[entrypoint] Starting Palworld"
 write_status "starting" "Starting Palworld Dedicated Server"
-cd "${PALWORLD_DIR}"
-exec "${PALWORLD_DIR}/PalServer.sh"
+chown -R "${PALWORLD_USER}:${PALWORLD_USER}" "${PALWORLD_DIR}/Pal" "${PALWORLD_DIR}/Engine" 2>/dev/null || true
+exec runuser -u "${PALWORLD_USER}" -- bash -lc "cd '${PALWORLD_DIR}' && exec '${PALWORLD_DIR}/PalServer.sh'"
