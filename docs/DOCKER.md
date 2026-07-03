@@ -79,6 +79,16 @@ data/panel
 
 删除容器不会删除这些数据。迁移服务器时，备份整个 `data/` 目录即可。
 
+MOD 管理相关路径：
+
+```text
+data/palworld/Pal/Content/Paks/~mods  # 已启用的 PAK/SIG MOD
+data/palworld/Pal/Content/Paks/Mods   # 官方 Info.json / Workshop-style MOD
+data/panel/mod-library                # 禁用、导入记录、元数据、废纸篓
+```
+
+面板只负责上传、识别、移动、启用状态维护和重启流程，不保证每个第三方 MOD 都能在 Linux/Docker Palworld 服务端正常运行。安装 MOD 前建议先在“存档管理”里备份当前存档。
+
 ## 更新
 
 容器启动时会运行 SteamCMD：
