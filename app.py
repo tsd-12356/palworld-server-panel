@@ -1080,6 +1080,19 @@ def discover_mod_files(mod_id: str, enabled: bool) -> list[Path]:
     return files
 
 
+def unique_file_infos(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for info in files:
+        path = str(info.get("path") or info.get("name") or "")
+        key = str(Path(path).resolve()) if path else str(info)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(info)
+    return unique
+
+
 def list_mods() -> list[dict[str, Any]]:
     ensure_mod_dirs()
     mods: dict[str, dict[str, Any]] = {}
@@ -1110,7 +1123,7 @@ def list_mods() -> list[dict[str, Any]]:
             meta["enabled"] = enabled or bool(meta.get("enabled"))
             meta["type"] = "pak" if meta.get("type") in {None, "", "sig"} else meta.get("type")
             meta.setdefault("files", [])
-            meta["files"] = [*meta.get("files", []), mod_file_info(path)]
+            meta["files"] = unique_file_infos([*meta.get("files", []), mod_file_info(path)])
 
     active_official = read_active_official_mods()
     for item in OFFICIAL_MOD_WORKSHOP_DIR.iterdir() if OFFICIAL_MOD_WORKSHOP_DIR.exists() else []:
@@ -1152,7 +1165,8 @@ def list_mods() -> list[dict[str, Any]]:
 
     for meta in mods.values():
         if meta.get("type") == "pak":
-            files = meta.get("files") or []
+            files = unique_file_infos(meta.get("files") or [])
+            meta["files"] = files
             meta["size_bytes"] = sum(file.get("size_bytes", 0) for file in files)
             meta["compatibility"] = "PAK MOD 通常要求客户端安装同款 MOD；启用后需要重启服务器。"
         meta.setdefault("enabled", False)
@@ -1165,6 +1179,9 @@ def install_pak_files(files: list[Path], name: str = "", notes: str = "") -> dic
     pak_files = [path for path in files if path.suffix.lower() == ".pak"]
     if not pak_files:
         raise ValueError("未找到 .pak 文件")
+    empty_files = [path.name for path in files if path.suffix.lower() in {".pak", ".sig"} and path.stat().st_size <= 0]
+    if empty_files:
+        raise ValueError(f"MOD 文件不能为空：{', '.join(empty_files)}")
     installed = []
     primary = pak_files[0]
     mod_id = normalize_mod_id(primary.stem)
@@ -1240,6 +1257,9 @@ def upload_mod(file_storage, name: str = "", notes: str = "") -> dict[str, Any]:
     upload_dir.mkdir(parents=True, exist_ok=False)
     upload_path = upload_dir / filename
     file_storage.save(upload_path)
+    if upload_path.stat().st_size <= 0:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise ValueError("MOD 文件不能为空")
     if upload_path.stat().st_size > MOD_UPLOAD_MAX_BYTES:
         shutil.rmtree(upload_dir, ignore_errors=True)
         raise ValueError("MOD 文件太大")
@@ -1260,6 +1280,8 @@ def upload_mod(file_storage, name: str = "", notes: str = "") -> dict[str, Any]:
             files = [upload_path, sidecar] if sidecar.exists() else [upload_path]
             mod = install_pak_files(files, name=name, notes=notes)
         else:
+            if upload_path.stat().st_size <= 0:
+                raise ValueError("MOD 文件不能为空")
             target = MOD_PAK_DIR / filename
             if target.exists():
                 raise ValueError(f"MOD 文件已存在：{target.name}")
