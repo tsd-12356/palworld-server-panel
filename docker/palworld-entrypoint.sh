@@ -13,6 +13,7 @@ SERVER_DESCRIPTION="${SERVER_DESCRIPTION:-Managed by Palworld Panel}"
 SERVER_MAX_PLAYERS="${SERVER_MAX_PLAYERS:-32}"
 STEAMCMD_RETRIES="${STEAMCMD_RETRIES:-8}"
 STEAMCMD_RETRY_DELAY="${STEAMCMD_RETRY_DELAY:-30}"
+PALWORLD_START_ON_STEAMCMD_FAILURE="${PALWORLD_START_ON_STEAMCMD_FAILURE:-true}"
 PALWORLD_INSTALL_STATUS_FILE="${PALWORLD_INSTALL_STATUS_FILE:-${PALWORLD_DIR}/.panel-install-status.json}"
 PALWORLD_USER="${PALWORLD_USER:-palworld}"
 PALWORLD_UID="${PALWORLD_UID:-1000}"
@@ -75,6 +76,12 @@ until runuser -u "${PALWORLD_USER}" -- "${STEAMCMD_DIR}/steamcmd.sh" \
     +login anonymous \
     +app_update "${PALWORLD_APP_ID}" validate \
     +quit; do
+  if [[ -x "${PALWORLD_DIR}/PalServer.sh" && "${PALWORLD_START_ON_STEAMCMD_FAILURE}" =~ ^([Tt]rue|1|yes|on)$ ]]; then
+    echo "[entrypoint] SteamCMD failed on attempt ${attempt}/${STEAMCMD_RETRIES}; starting existing Palworld installation" >&2
+    write_status "starting" "SteamCMD update failed; starting existing Palworld installation" "true"
+    break
+  fi
+
   if [[ "${attempt}" -ge "${STEAMCMD_RETRIES}" ]]; then
     echo "[entrypoint] SteamCMD failed after ${attempt} attempts" >&2
     write_status "failed" "SteamCMD install/update failed after ${attempt} attempts" "false"

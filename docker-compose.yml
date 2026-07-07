@@ -63,8 +63,10 @@ services:
       SAVE_SLOT_ROOT: /app/data/save-slots
       PANEL_UPDATE_STATUS: /app/data/update-status.json
       PANEL_UPDATE_LOG: /app/data/update.log
+      PANEL_UPDATE_SCRIPT: /app/panel_update.py
       PANEL_INSTALL_STATUS: /app/data/install-status.json
       PANEL_INSTALL_LOG: /app/data/install.log
+      PANEL_INSTALL_SCRIPT: /app/panel_install.py
       PANEL_ASSET_VERSION: ${PANEL_ASSET_VERSION:-docker}
       AUTO_UPDATE_ENABLED: "false"
       MOD_LIBRARY_ROOT: ${MOD_LIBRARY_ROOT:-/app/data/mod-library}
