@@ -34,6 +34,8 @@ const state = {
     logAutoScroll: true,
     progressStartedAt: 0,
     progressLastError: "",
+    activeAbortController: null,
+    uploadMaxBytes: 1024 * 1024 * 1024,
 };
 
 const particles = {
@@ -253,12 +255,16 @@ const configDefaults = {
 const stringFields = new Set(["ServerName", "ServerDescription", "ServerPassword", "AdminPassword"]);
 
 function stripQuotes(value) {
-    return String(value ?? "").replace(/^"|"$/g, "");
+    const text = String(value ?? "");
+    if (text.length >= 2 && text[0] === '"' && text.at(-1) === '"') {
+        return text.slice(1, -1).replace(/\\(["\\])/g, "$1");
+    }
+    return text;
 }
 
 function normalizeSubmitValue(key, value) {
-    const text = stripQuotes(value).trim();
-    if (stringFields.has(key)) return `"${text.replaceAll('"', '\\"')}"`;
+    const text = stripQuotes(value);
+    if (stringFields.has(key)) return text;
     return String(value ?? "").trim();
 }
 
@@ -408,8 +414,20 @@ function openDialog(options = {}) {
             }
             closeDialog(true);
         };
-        cancel.onclick = () => closeDialog(null);
-        $("#dialogClose").onclick = () => closeDialog(null);
+        cancel.onclick = () => {
+            if (options.progress && typeof options.onCancel === "function") {
+                options.onCancel();
+                return;
+            }
+            closeDialog(null);
+        };
+        $("#dialogClose").onclick = () => {
+            if (options.progress && typeof options.onCancel === "function") {
+                options.onCancel();
+                return;
+            }
+            closeDialog(null);
+        };
     });
 }
 
@@ -431,15 +449,17 @@ function setProgressStep(index, status = "active", message = "") {
     if (summary) summary.textContent = message || (status === "done" ? "步骤完成" : status === "error" ? "步骤失败" : "正在执行...");
 }
 
-function openProgressDialog(title, steps, text = "") {
+function openProgressDialog(title, steps, text = "", options = {}) {
     return openDialog({
         eyebrow: "Progress",
         title,
         text,
         steps,
         progress: true,
-        hideCancel: true,
+        hideCancel: !options.cancelable,
         hideSubmit: true,
+        cancelText: options.cancelText || "取消",
+        onCancel: options.onCancel,
     });
 }
 
@@ -448,7 +468,8 @@ function finishProgressDialog(message, type = "success") {
     $("#dialogText").textContent = message;
     const summary = $("#interactionModal .progress-summary");
     if (summary) {
-        summary.textContent = `${type === "error" ? "操作失败" : "操作完成"} · 耗时 ${elapsed} 秒`;
+        const resultText = type === "error" ? "操作失败" : type === "warn" ? "需要确认" : "操作完成";
+        summary.textContent = `${resultText} · 耗时 ${elapsed} 秒`;
     }
     const bar = $("#interactionModal .progress-meter span");
     if (bar && type !== "error") bar.style.width = "100%";
@@ -764,13 +785,39 @@ function initCursorGlow() {
     }
 }
 
+function abortActiveRequest() {
+    if (!state.activeAbortController) return;
+    state.activeAbortController.abort();
+    state.activeAbortController = null;
+    state.progressLastError = "请求已取消";
+    showToast("已取消当前请求", "warn");
+}
+
 async function api(path, options = {}) {
-    const response = await fetch(path, options);
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        throw new Error(data.message || `请求失败 (${response.status})`);
+    const { timeout = 30000, controller, ...fetchOptions } = options;
+    const activeController = controller || (timeout ? new AbortController() : null);
+    let timer = null;
+    if (activeController && timeout) {
+        timer = setTimeout(() => activeController.abort(), timeout);
+        fetchOptions.signal = activeController.signal;
+    } else if (activeController) {
+        fetchOptions.signal = activeController.signal;
     }
-    return data;
+    try {
+        const response = await fetch(path, fetchOptions);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.message || `请求失败 (${response.status})`);
+        }
+        return data;
+    } catch (error) {
+        if (error.name === "AbortError") {
+            throw new Error("请求已取消或超时");
+        }
+        throw error;
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 function updateTabIndicator() {
@@ -880,7 +927,7 @@ function renderStatus(data) {
     $("#serverUptime").textContent = status.start_time ? `模式：${backendText} · 启动时间：${status.start_time}` : `模式：${backendText}`;
     $("#playerCountBadge").textContent = `${playerTotal} 人`;
 
-    updateActionButtons(status.running);
+    updateActionButtons(status.running, status.container_running);
     renderPlayers(players);
 }
 
@@ -1033,22 +1080,23 @@ async function refreshSystem() {
     }
 }
 
-function updateActionButtons(isRunning) {
+function updateActionButtons(isRunning, containerRunning = false) {
     const startButton = $('[data-action="start"]');
     const restartButton = $('[data-action="restart"]');
     const stopButton = $('[data-action="stop"]');
+    const active = Boolean(isRunning || containerRunning);
 
     if (startButton) {
-        startButton.disabled = isRunning;
-        startButton.title = isRunning ? "服务器已在运行" : "启动服务器";
+        startButton.disabled = active;
+        startButton.title = active ? "服务器已在运行或启动中" : "启动服务器";
     }
     if (restartButton) {
-        restartButton.disabled = !isRunning;
-        restartButton.title = isRunning ? "重启服务器" : "服务器停止时不可重启";
+        restartButton.disabled = !active;
+        restartButton.title = active ? "重启服务器" : "服务器停止时不可重启";
     }
     if (stopButton) {
-        stopButton.disabled = !isRunning;
-        stopButton.title = isRunning ? "停止服务器" : "服务器已停止";
+        stopButton.disabled = !active;
+        stopButton.title = active ? "停止服务器" : "服务器已停止";
     }
 }
 
@@ -1082,7 +1130,7 @@ async function refreshAll() {
         refreshSystem();
     }
 
-    if (state.currentTab === "log" || state.logAutoRefresh) {
+    if (state.currentTab === "log" && state.logAutoRefresh) {
         loadLog();
     }
     if (state.currentTab === "dashboard" || state.currentTab === "saves") {
@@ -1832,6 +1880,13 @@ async function uploadMod() {
         return;
     }
 
+    if (file.size > state.uploadMaxBytes) {
+        setMessage($("#modMsg"), `MOD 文件不能超过 ${formatBytes(state.uploadMaxBytes)}。`, "error");
+        showToast("MOD 文件太大", "error");
+        input.value = "";
+        return;
+    }
+
     const defaultName = file.name.replace(/\.(pak|sig|zip)$/i, "");
     const values = await openDialog({
         eyebrow: "Mod Upload",
@@ -1854,12 +1909,18 @@ async function uploadMod() {
     formData.append("notes", values.notes || "");
 
     setModControlsBusy(true);
-    openProgressDialog("上传 MOD", ["选择文件", "上传", "识别类型", "刷新列表"], "面板只会移动 .pak/.sig 或 Info.json 包，不会执行 MOD 内任何脚本。");
+    state.activeAbortController = new AbortController();
+    openProgressDialog(
+        "上传 MOD",
+        ["选择文件", "上传", "识别类型", "刷新列表"],
+        "面板只会移动 .pak/.sig 或 Info.json 包，不会执行 MOD 内任何脚本。",
+        { cancelable: true, onCancel: abortActiveRequest }
+    );
     setProgressStep(0, "done", file.name);
     setProgressStep(1, "active", "正在上传...");
     setMessage($("#modMsg"), `正在上传 ${file.name}...`);
     try {
-        const data = await api("/api/mods/upload", { method: "POST", body: formData });
+        const data = await api("/api/mods/upload", { method: "POST", body: formData, controller: state.activeAbortController, timeout: 0 });
         setProgressStep(1, "done", "上传完成");
         setProgressStep(2, "done", `${modTypeLabel(data.mod?.type)} 已导入`);
         setProgressStep(3, "active", "正在刷新列表...");
@@ -1875,6 +1936,7 @@ async function uploadMod() {
         showToast(error.message, "error");
     } finally {
         input.value = "";
+        state.activeAbortController = null;
         setModControlsBusy(false);
     }
 }
@@ -1989,9 +2051,14 @@ async function applyModsRestart() {
         await refreshAll();
         await loadMods(false);
         setProgressStep(3, "done", "状态已刷新");
-        finishProgressDialog(data.message || "MOD 变更已应用", data.success ? "success" : "error");
-        setMessage($("#modMsg"), data.message || "MOD 变更已应用。", "success");
-        showToast(data.message || "MOD 变更已应用", "success");
+        const hasFailedStep = (data.steps || []).some((step) => step.success === false);
+        const ok = Boolean(data.success && data.running && !hasFailedStep);
+        const resultMessage = ok
+            ? (data.message || "MOD 变更已应用，服务器已恢复运行")
+            : (data.message || "MOD 变更已提交，但未确认服务器恢复，请查看实时日志");
+        finishProgressDialog(resultMessage, ok ? "success" : "error");
+        setMessage($("#modMsg"), resultMessage, ok ? "success" : "error");
+        showToast(resultMessage, ok ? "success" : "error");
     } catch (error) {
         setProgressStep(1, "error", error.message);
         finishProgressDialog(error.message, "error");
@@ -2762,6 +2829,13 @@ async function uploadSaveSlot() {
         return;
     }
 
+    if (file.size > state.uploadMaxBytes) {
+        setMessage($("#saveMsg"), `存档包不能超过 ${formatBytes(state.uploadMaxBytes)}。`, "error");
+        showToast("存档包太大", "error");
+        input.value = "";
+        return;
+    }
+
     const defaultName = file.name.replace(/\.zip$/i, "");
     const values = await openDialog({
         eyebrow: "Upload Save",
@@ -2785,7 +2859,13 @@ async function uploadSaveSlot() {
     formData.append("notes", notes);
 
     setSaveControlsBusy(true);
-    openProgressDialog("上传并导入存档", ["选择文件", "上传 ZIP", "解压导入", "刷新列表"], "大存档可能需要一些时间，请保持页面打开。");
+    state.activeAbortController = new AbortController();
+    openProgressDialog(
+        "上传并导入存档",
+        ["选择文件", "上传 ZIP", "解压导入", "刷新列表"],
+        "大存档可能需要一些时间，请保持页面打开。",
+        { cancelable: true, onCancel: abortActiveRequest }
+    );
     setProgressStep(0, "done", file.name);
     setProgressStep(1, "active", "正在上传...");
     setMessage($("#saveMsg"), `正在上传并导入 ${file.name}，大存档可能需要一些时间...`);
@@ -2794,6 +2874,8 @@ async function uploadSaveSlot() {
         const data = await api("/api/saves/upload_slot", {
             method: "POST",
             body: formData,
+            controller: state.activeAbortController,
+            timeout: 0,
         });
         setProgressStep(1, "done", "上传完成");
         setProgressStep(2, "done", "解压并导入完成");
@@ -2810,6 +2892,7 @@ async function uploadSaveSlot() {
         showToast(error.message, "error");
     } finally {
         input.value = "";
+        state.activeAbortController = null;
         setSaveControlsBusy(false);
     }
 }
@@ -2846,12 +2929,17 @@ async function switchSaveSlot(slotId, name) {
         (data.steps || []).forEach((step, index) => {
             setProgressStep(index, step.success ? "done" : "error", step.message || (step.success ? "完成" : "失败"));
         });
-        setProgressStep(5, data.success ? "done" : "error", data.message || "切换完成");
-        setMessage($("#saveMsg"), `${data.message || "存档切换完成。"}\n${renderSwitchSteps(data.steps)}`, "success");
-        showToast(data.message || "存档切换完成", "success");
+        const hasFailedStep = (data.steps || []).some((step) => step.success === false);
+        const ok = Boolean(data.success && data.running && !hasFailedStep);
+        const resultMessage = ok
+            ? (data.message || "存档切换完成，服务器已恢复运行")
+            : (data.message || "存档切换流程结束，但未确认服务器恢复，请查看实时日志");
+        setProgressStep(5, ok ? "done" : "error", resultMessage);
+        setMessage($("#saveMsg"), `${resultMessage}\n${renderSwitchSteps(data.steps)}`, ok ? "success" : "error");
+        showToast(resultMessage, ok ? "success" : "error");
         await refreshAll();
         await loadSaves(false);
-        finishProgressDialog(data.message || "存档切换完成。", data.success ? "success" : "error");
+        finishProgressDialog(resultMessage, ok ? "success" : "error");
     } catch (error) {
         setProgressStep(0, "error", error.message);
         finishProgressDialog(error.message, "error");

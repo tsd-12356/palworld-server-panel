@@ -18,6 +18,7 @@ import struct
 import subprocess
 import sys
 import time
+import urllib.request
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -81,9 +82,19 @@ INSTALL_LOG = Path(os.environ.get("PANEL_INSTALL_LOG", "/home/demo/palworld-pane
 INSTALL_REQUEST = Path(os.environ.get("PANEL_INSTALL_REQUEST", "/home/demo/palworld-panel/install-request.json"))
 INSTALL_SERVICE = os.environ.get("PANEL_INSTALL_SERVICE", "palworld-panel-install.service")
 VALID_SLOT_ID = re.compile(r"^[a-z0-9_-]{1,64}$")
+VALID_WORLD_ID = re.compile(r"^[A-Fa-f0-9]{32}$")
+CONFIG_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+STRING_FIELDS = {"ServerName", "ServerDescription", "ServerPassword", "AdminPassword"}
 SAVE_UPLOAD_MAX_EXTRACTED_BYTES = int(os.environ.get("SAVE_UPLOAD_MAX_EXTRACTED_BYTES", str(2 * 1024 * 1024 * 1024)))
 
 NUMERIC_RANGES = {
+    "ServerPlayerMaxNum": (1, 128),
+    "GuildPlayerMaxNum": (1, 100),
+    "AutoSaveSpan": (1, 3600),
+    "ChatPostLimitPerMinute": (0, 1000),
+    "BaseCampMaxNum": (1, 512),
+    "BaseCampWorkerMaxNum": (1, 100),
+    "BaseCampMaxNumInGuild": (1, 512),
     "ExpRate": (0.1, 20),
     "PalCaptureRate": (0.5, 2),
     "PalSpawnNumRate": (0.5, 3),
@@ -121,6 +132,17 @@ NUMERIC_RANGES = {
 }
 
 FIELD_LABELS = {
+    "ServerName": "服务器名称",
+    "ServerDescription": "服务器描述",
+    "ServerPassword": "服务器密码",
+    "AdminPassword": "管理员密码",
+    "ServerPlayerMaxNum": "最大玩家数",
+    "GuildPlayerMaxNum": "公会最大人数",
+    "AutoSaveSpan": "自动存档间隔",
+    "ChatPostLimitPerMinute": "聊天限速",
+    "BaseCampMaxNum": "据点最大数量",
+    "BaseCampWorkerMaxNum": "据点工人数上限",
+    "BaseCampMaxNumInGuild": "公会据点上限",
     "ExpRate": "经验倍率",
     "PalCaptureRate": "帕鲁捕获率",
     "PalSpawnNumRate": "帕鲁刷新率",
@@ -161,6 +183,8 @@ BOOL_FIELDS = {
 CHOICE_FIELDS = {
     "DeathPenalty": {"None", "Item", "ItemAndEquipment", "All"},
 }
+
+ALLOWED_CONFIG_KEYS = STRING_FIELDS | set(NUMERIC_RANGES) | BOOL_FIELDS | set(CHOICE_FIELDS)
 
 
 def run_command(args: list[str], timeout: int = 30, sudo: bool = False) -> tuple[str, str, int]:
@@ -317,9 +341,16 @@ def parse_palworld_settings(text: str | None = None) -> dict[str, str]:
     in_quote = False
     quote_char = ""
 
+    escaped = False
     for char in inner:
         if in_quote:
             buf.append(char)
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
             if char == quote_char:
                 in_quote = False
             continue
@@ -351,6 +382,49 @@ def parse_palworld_settings(text: str | None = None) -> dict[str, str]:
     return options
 
 
+def decode_setting_string(value: Any, fallback: str = "") -> str:
+    if value is None:
+        return fallback
+    text = str(value)
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        body = text[1:-1]
+        decoded: list[str] = []
+        escaped = False
+        for char in body:
+            if escaped:
+                decoded.append(char)
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            else:
+                decoded.append(char)
+        if escaped:
+            decoded.append("\\")
+        return "".join(decoded)
+    return text
+
+
+def encode_setting_string(value: Any) -> str:
+    text = str(value if value is not None else "")
+    if any(ord(char) < 32 for char in text):
+        raise ValueError("字符串配置不能包含换行或控制字符")
+    if len(text) > 512:
+        raise ValueError("字符串配置不能超过 512 个字符")
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def normalize_config_value(key: str, value: Any) -> str:
+    if key in STRING_FIELDS:
+        return decode_setting_string(value)
+    return str(value if value is not None else "").strip()
+
+
+def serialize_config_value(key: str, value: Any) -> str:
+    if key in STRING_FIELDS:
+        return encode_setting_string(value)
+    return str(value if value is not None else "").strip()
+
+
 def build_palworld_settings(options: dict[str, str]) -> str:
     option_line = "OptionSettings=(" + ",".join(f"{key}={value}" for key, value in options.items()) + ")"
     return "[/Script/Pal.PalGameWorldSettings]\n" + option_line + "\n"
@@ -358,9 +432,25 @@ def build_palworld_settings(options: dict[str, str]) -> str:
 
 def validate_config_changes(changes: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    for key, value in changes.items():
-        text = str(value).strip()
-        label = FIELD_LABELS.get(key, key)
+    for raw_key, value in changes.items():
+        key = str(raw_key or "").strip()
+        label = FIELD_LABELS.get(key, key or "配置项")
+
+        if not key or not CONFIG_KEY_RE.match(key):
+            errors.append(f"{label} 名称不合法")
+            continue
+        if key not in ALLOWED_CONFIG_KEYS:
+            errors.append(f"不支持修改配置项：{key}")
+            continue
+
+        if key in STRING_FIELDS:
+            try:
+                encode_setting_string(decode_setting_string(value))
+            except ValueError as exc:
+                errors.append(f"{label}：{exc}")
+            continue
+
+        text = str(value if value is not None else "").strip()
 
         if key in NUMERIC_RANGES:
             try:
@@ -397,9 +487,11 @@ def update_palworld_settings(changes: dict[str, Any]) -> dict[str, str]:
         raise ValueError("; ".join(errors[:5]))
 
     current = parse_palworld_settings()
-    for key, value in changes.items():
+    for raw_key, value in changes.items():
+        key = str(raw_key or "").strip()
         if key and value is not None:
-            current[str(key)] = str(value)
+            normalized = normalize_config_value(key, value)
+            current[key] = serialize_config_value(key, normalized)
 
     backup_config_file()
     tmp_path = PALWORLD_CONFIG.with_name(f".{PALWORLD_CONFIG.name}.tmp")
@@ -411,9 +503,10 @@ def update_palworld_settings(changes: dict[str, Any]) -> dict[str, str]:
 def get_changed_config_keys(changes: dict[str, Any]) -> list[str]:
     current = parse_palworld_settings()
     changed = []
-    for key, value in changes.items():
-        if str(current.get(str(key), "")) != str(value):
-            changed.append(str(key))
+    for raw_key, value in changes.items():
+        key = str(raw_key or "").strip()
+        if normalize_config_value(key, current.get(key, "")) != normalize_config_value(key, value):
+            changed.append(key)
     return sorted(changed)
 
 
@@ -467,6 +560,49 @@ def tail_text(path: Path, lines: int = 80) -> list[str]:
         return []
 
 
+def parse_steam_manifest(manifest_path: Path | None = None) -> dict[str, str]:
+    app_manifest = manifest_path or (PALWORLD_DIR / "steamapps" / "appmanifest_2394010.acf")
+    text = app_manifest.read_text(encoding="utf-8", errors="replace") if app_manifest.exists() else ""
+    build_match = re.search(r'"buildid"\s+"([^"]+)"', text)
+    depot_match = re.search(r'"2394012"\s*\{(?P<body>.*?)\n\s*\}', text, flags=re.S)
+    manifest = ""
+    if depot_match:
+        manifest_match = re.search(r'"manifest"\s+"([^"]+)"', depot_match.group("body"))
+        if manifest_match:
+            manifest = manifest_match.group(1)
+    return {"buildid": build_match.group(1) if build_match else "", "manifest": manifest}
+
+
+def fetch_latest_manifest() -> str:
+    with urllib.request.urlopen("https://api.steamcmd.net/v1/info/2394010", timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    app_data = data["data"]["2394010"]
+    return str(app_data["depots"]["2394012"]["manifests"]["public"]["gid"])
+
+
+def run_docker_update_check() -> dict[str, Any]:
+    local = parse_steam_manifest()
+    latest_manifest = fetch_latest_manifest()
+    update_available = bool(latest_manifest and local.get("manifest") and latest_manifest != local["manifest"])
+    status = {
+        **read_json(UPDATE_STATUS, {}),
+        "backend": "docker",
+        "running": False,
+        "phase": "checked",
+        "checked_at": iso_now(),
+        "auto_update_enabled": False,
+        "local_buildid": local.get("buildid", ""),
+        "local_manifest": local.get("manifest", ""),
+        "latest_manifest": latest_manifest,
+        "update_available": update_available,
+        "message": "Update available" if update_available else "Already up to date",
+        "success": True,
+        "steps": [{"name": "detect", "status": "done", "message": "Update available" if update_available else "Already up to date", "time": iso_now()}],
+    }
+    write_json(UPDATE_STATUS, status)
+    return status
+
+
 def read_update_status() -> dict[str, Any]:
     status = read_json(UPDATE_STATUS, {})
     if using_docker_backend():
@@ -495,6 +631,25 @@ def read_update_status() -> dict[str, Any]:
 
 
 def run_update_check_now() -> tuple[bool, str]:
+    if using_docker_backend():
+        try:
+            details = run_docker_update_check()
+            return True, "检查完成：发现新版本" if details.get("update_available") else "检查完成：已是最新"
+        except Exception as exc:
+            status = read_update_status()
+            write_json(
+                UPDATE_STATUS,
+                {
+                    **status,
+                    "backend": "docker",
+                    "running": False,
+                    "phase": "failed",
+                    "checked_at": iso_now(),
+                    "success": False,
+                    "message": str(exc),
+                },
+            )
+            return False, f"检查失败：{exc}"
     if not UPDATE_SCRIPT.exists():
         return False, "update script is not installed"
     out, err, code = run_command([sys.executable, str(UPDATE_SCRIPT), "--check"], timeout=120, sudo=False)
@@ -771,6 +926,22 @@ def require_slot_id(slot_id: str) -> str:
     return slot_id
 
 
+def generate_world_id() -> str:
+    return os.urandom(16).hex().upper()
+
+
+def normalize_world_id(world_id: str) -> str:
+    world_id = str(world_id or "").strip().upper()
+    return world_id if VALID_WORLD_ID.match(world_id) else ""
+
+
+def require_world_id(world_id: str) -> str:
+    world_id = normalize_world_id(world_id)
+    if not world_id:
+        raise ValueError("world_id 必须是 32 位十六进制字符串")
+    return world_id
+
+
 def slot_path(slot_id: str) -> Path:
     return SAVE_SLOT_DIR / require_slot_id(slot_id)
 
@@ -796,7 +967,7 @@ def set_recorded_active_slot(slot_id: str, world_id: str) -> None:
         ACTIVE_SLOT_PATH,
         {
             "slot_id": require_slot_id(slot_id),
-            "world_id": world_id,
+            "world_id": require_world_id(world_id),
             "updated_at": iso_now(),
         },
     )
@@ -823,7 +994,7 @@ def find_world_dirs(root: Path) -> list[Path]:
         return []
     worlds = []
     for path in root.iterdir():
-        if path.is_dir() and (path / "Level.sav").exists():
+        if path.is_dir() and normalize_world_id(path.name) and (path / "Level.sav").exists():
             worlds.append(path)
     return sorted(worlds, key=lambda item: item.name)
 
@@ -836,6 +1007,7 @@ def read_dedicated_server_name() -> str:
 
 
 def write_dedicated_server_name(world_id: str) -> None:
+    world_id = require_world_id(world_id)
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     text = GAME_USER_SETTINGS.read_text(encoding="utf-8", errors="replace") if GAME_USER_SETTINGS.exists() else ""
     line = f"DedicatedServerName={world_id}"
@@ -851,12 +1023,12 @@ def write_dedicated_server_name(world_id: str) -> None:
 
 
 def current_world_id() -> str:
-    configured = read_dedicated_server_name()
+    configured = normalize_world_id(read_dedicated_server_name())
     worlds = find_world_dirs(ACTIVE_SAVEGAMES_DIR)
-    if configured and any(world.name == configured for world in worlds):
+    if configured and any(normalize_world_id(world.name) == configured for world in worlds):
         return configured
     if worlds:
-        return worlds[0].name
+        return require_world_id(worlds[0].name)
     return configured
 
 
@@ -865,14 +1037,14 @@ def savegames_payload_root(source: Path) -> tuple[Path, str, bool]:
     if has_symlink(source):
         raise ValueError("存档目录不能包含符号链接")
     if (source / "Level.sav").exists():
-        return source, source.name, True
+        return source, require_world_id(source.name), True
     nested = source / "SaveGames" / "0"
     worlds = find_world_dirs(nested)
     if worlds:
-        return nested, worlds[0].name, False
+        return nested, require_world_id(worlds[0].name), False
     worlds = find_world_dirs(source)
     if worlds:
-        return source, worlds[0].name, False
+        return source, require_world_id(worlds[0].name), False
     raise ValueError("未找到有效存档目录，至少需要 Level.sav")
 
 
@@ -1182,6 +1354,9 @@ def install_pak_files(files: list[Path], name: str = "", notes: str = "") -> dic
     empty_files = [path.name for path in files if path.suffix.lower() in {".pak", ".sig"} and path.stat().st_size <= 0]
     if empty_files:
         raise ValueError(f"MOD 文件不能为空：{', '.join(empty_files)}")
+    pak_stems = {normalize_mod_id(path.stem) for path in pak_files}
+    if len(pak_stems) > 1:
+        raise ValueError("压缩包包含多个不同的 .pak 文件，请拆分后分别上传")
     installed = []
     primary = pak_files[0]
     mod_id = normalize_mod_id(primary.stem)
@@ -1437,13 +1612,30 @@ def restart_for_mods() -> dict[str, Any]:
         steps.append({"step": name, "success": success, "message": message})
 
     backup = None
-    try:
-        backup = backup_current_save("before-mod-restart")
-        step("backup", True, backup["id"])
-    except Exception as exc:
-        step("backup", False, str(exc))
+    status_before = get_server_status()
+    was_running = bool(status_before.get("running"))
+    container_running = bool(status_before.get("container_running", was_running))
 
-    success, message = service_action("restart")
+    if was_running:
+        save_output = rcon_command("Save")
+        save_ok = not save_output.startswith("[RCON Error]")
+        step("save", save_ok, save_output or "Save command sent")
+        time.sleep(5)
+    else:
+        step("save", True, "server is not running; skip RCON save")
+
+    if container_running or was_running:
+        success, message = service_action("stop")
+        step("stop", success, message)
+        if not success or not wait_for_service_state(False, timeout=90):
+            raise RuntimeError("停止服务器失败，已取消应用 MOD")
+    else:
+        step("stop", True, "server already stopped")
+
+    backup = backup_current_save("before-mod-restart")
+    step("backup", True, backup["id"])
+
+    success, message = service_action("start")
     step("restart", success, message)
     if not success:
         raise RuntimeError(message)
@@ -1501,7 +1693,8 @@ def list_save_slots() -> list[dict[str, Any]]:
         slot_id = meta.get("id") or item.name
         savegames = slot_savegames_dir(slot_id)
         worlds = find_world_dirs(savegames)
-        world_id = meta.get("world_id") or (worlds[0].name if worlds else "")
+        meta_world_id = normalize_world_id(meta.get("world_id", ""))
+        world_id = meta_world_id or (require_world_id(worlds[0].name) if worlds else "")
         slots.append(
             {
                 "id": slot_id,
@@ -1547,7 +1740,7 @@ def create_slot(name: str, notes: str = "", slot_id: str | None = None, is_new: 
     metadata = {
         "id": slot_id,
         "name": name or slot_id,
-        "world_id": slot_id,
+        "world_id": generate_world_id(),
         "created_at": iso_now(),
         "last_used_at": None,
         "source": "new",
@@ -1561,6 +1754,7 @@ def create_slot(name: str, notes: str = "", slot_id: str | None = None, is_new: 
 def import_slot(source_path: str, name: str, notes: str = "", slot_id: str | None = None) -> dict[str, Any]:
     ensure_save_dirs()
     source_root, world_id, direct_world = savegames_payload_root(Path(source_path).expanduser())
+    world_id = require_world_id(world_id)
     if path_within(source_root, SAVE_ROOT) and get_server_status()["running"]:
         raise ValueError("服务器运行中不能从当前活跃存档目录导入，请先停止服务器或复制到导入目录")
     slot_id = require_slot_id(slot_id or normalize_slot_id(name or world_id))
@@ -1572,6 +1766,12 @@ def import_slot(source_path: str, name: str, notes: str = "", slot_id: str | Non
         copytree_clean(source_root, target_root / world_id)
     else:
         copytree_clean(source_root, target_root)
+        target_worlds = find_world_dirs(target_root)
+        if len(target_worlds) == 1 and target_worlds[0].name != world_id:
+            normalized_target = target_root / world_id
+            if normalized_target.exists():
+                raise ValueError("目标存档世界目录已存在")
+            target_worlds[0].rename(normalized_target)
     config_source = source_root.parent.parent / "Config" if direct_world and source_root.parent.name == "0" else source_root / "Config"
     if config_source.exists() and path_within(config_source, SAVE_ROOT):
         copytree_clean(config_source, path / "Config")
@@ -1672,6 +1872,7 @@ def switch_save_slot(slot_id: str) -> dict[str, Any]:
     def step(name: str, success: bool = True, message: str = "") -> None:
         steps.append({"step": name, "success": success, "message": message})
 
+    original_game_user = GAME_USER_SETTINGS.read_text(encoding="utf-8", errors="replace") if GAME_USER_SETTINGS.exists() else None
     was_running = get_server_status()["running"]
     if was_running:
         success, message = service_action("stop")
@@ -1690,27 +1891,56 @@ def switch_save_slot(slot_id: str) -> dict[str, Any]:
             raise
         step("backup", True, "当前存档目录为空，跳过备份")
 
+    world_id = ""
+
+    def rollback_after_failure(reason: Exception) -> None:
+        try:
+            current_status = get_server_status()
+            if current_status.get("container_running"):
+                service_action("stop")
+                wait_for_service_state(False, timeout=60)
+            remove_children(ACTIVE_SAVEGAMES_DIR)
+            if backup:
+                copytree_clean(SAVE_BACKUP_DIR / backup["id"] / "SaveGames" / "0", ACTIVE_SAVEGAMES_DIR)
+            if original_game_user is None:
+                if GAME_USER_SETTINGS.exists():
+                    GAME_USER_SETTINGS.unlink()
+            else:
+                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                tmp = GAME_USER_SETTINGS.with_suffix(".ini.tmp")
+                tmp.write_text(original_game_user, encoding="utf-8")
+                tmp.replace(GAME_USER_SETTINGS)
+            fix_save_ownership()
+            if was_running:
+                service_action("start")
+            step("rollback", True, "已回滚到切换前存档")
+        except Exception as rollback_exc:
+            step("rollback", False, str(rollback_exc))
+            raise RuntimeError(f"{reason}; 回滚失败：{rollback_exc}") from rollback_exc
+
     try:
         remove_children(ACTIVE_SAVEGAMES_DIR)
         if worlds:
             copytree_clean(slot_savegames, ACTIVE_SAVEGAMES_DIR)
-            world_id = metadata.get("world_id") or worlds[0].name
+            world_id = require_world_id(metadata.get("world_id") or worlds[0].name)
         else:
-            world_id = metadata.get("world_id") or slot_id
-        if world_id:
-            write_dedicated_server_name(world_id)
+            world_id = normalize_world_id(metadata.get("world_id", "")) or generate_world_id()
+        write_dedicated_server_name(world_id)
         fix_save_ownership()
         step("switch", True, world_id)
-    except Exception:
-        remove_children(ACTIVE_SAVEGAMES_DIR)
-        if backup:
-            copytree_clean(SAVE_BACKUP_DIR / backup["id"] / "SaveGames" / "0", ACTIVE_SAVEGAMES_DIR)
-        raise
+        step("permissions", True, "权限已修复")
 
-    success, message = service_action("start")
-    step("start", success, message)
-    if not success:
-        raise RuntimeError(message)
+        success, message = service_action("start")
+        step("start", success, message)
+        if not success:
+            raise RuntimeError(message)
+        restored = wait_for_service_state(True, timeout=90)
+        step("status", restored, "server running" if restored else "server did not report running in time")
+        if not restored:
+            raise RuntimeError("服务器启动后未在限定时间内恢复运行")
+    except Exception as exc:
+        rollback_after_failure(exc)
+        raise RuntimeError(f"{exc}; 已回滚到切换前存档") from exc
 
     metadata["last_used_at"] = iso_now()
     metadata["world_id"] = world_id
@@ -1738,12 +1968,7 @@ def delete_save_slot(slot_id: str) -> dict[str, Any]:
 
 
 def unquote_setting(value: str, fallback: str = "") -> str:
-    if value is None:
-        return fallback
-    value = str(value)
-    if len(value) >= 2 and value[0] == value[-1] == '"':
-        return value[1:-1]
-    return value
+    return decode_setting_string(value, fallback=fallback)
 
 
 def rcon_command(command: str) -> str:
@@ -2005,12 +2230,19 @@ def service_action(action: str) -> tuple[bool, str]:
             elif action == "restart":
                 container.restart(timeout=90)
             time.sleep(3 if action == "restart" else 2)
-            running = get_server_status()["running"]
-            success = running if action in {"start", "restart"} else not running
-            if success:
-                messages = {"start": "Server container started", "stop": "Server container stopped", "restart": "Server container restarted"}
-                return True, messages[action]
-            return False, f"Docker container {action} did not reach expected state"
+            container.reload()
+            container_running = container.status == "running"
+            if action in {"start", "restart"}:
+                if container_running:
+                    messages = {
+                        "start": "Server container started; Palworld is starting",
+                        "restart": "Server container restarted; Palworld is starting",
+                    }
+                    return True, messages[action]
+                return False, f"Docker container {action} did not enter running state"
+            if not container_running:
+                return True, "Server container stopped"
+            return False, "Docker container stop did not reach expected state"
         except Exception as exc:
             return False, str(exc)
 
