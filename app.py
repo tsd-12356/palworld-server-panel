@@ -15,7 +15,6 @@ import json
 import re
 import shutil
 import socket
-import struct
 import subprocess
 import sys
 import threading
@@ -28,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+
+from rcon import rcon_command as send_rcon_command
 
 
 app = Flask(__name__)
@@ -51,6 +52,10 @@ PANEL_USER = os.environ.get("PANEL_USER", "demo")
 RCON_HOST = os.environ.get("RCON_HOST", "127.0.0.1")
 RCON_PORT = int(os.environ.get("RCON_PORT", "25575"))
 RCON_PASSWORD = os.environ.get("RCON_PASSWORD", "")
+RCON_TIMEOUT_SECONDS = float(os.environ.get("RCON_TIMEOUT_SECONDS", "10"))
+PLAYER_CACHE_TTL_SECONDS = float(os.environ.get("PLAYER_CACHE_TTL_SECONDS", "8"))
+_player_response_cache: tuple[float, str] = (0.0, "")
+_player_response_lock = threading.Lock()
 
 SYSTEMCTL = os.environ.get("SYSTEMCTL", "/usr/bin/systemctl")
 JOURNALCTL = os.environ.get("JOURNALCTL", "/usr/bin/journalctl")
@@ -493,6 +498,8 @@ def parse_default_palworld_settings() -> dict[str, str]:
 def get_panel_settings() -> dict[str, str]:
     settings = parse_default_palworld_settings()
     settings.update(parse_palworld_settings())
+    for key in DEPLOYMENT_MANAGED_CONFIG_KEYS:
+        settings.pop(key, None)
     return settings
 
 
@@ -509,6 +516,9 @@ def validate_config_changes(changes: dict[str, Any]) -> list[str]:
 
         if not key or not CONFIG_KEY_RE.match(key):
             errors.append(f"{label} 名称不合法")
+            continue
+        if key in DEPLOYMENT_MANAGED_CONFIG_KEYS:
+            errors.append(f"{label} 由部署配置管理，不能在面板中修改")
             continue
         if key not in ALLOWED_CONFIG_KEYS:
             errors.append(f"不支持修改配置项：{key}")
@@ -2120,55 +2130,8 @@ def unquote_setting(value: str, fallback: str = "") -> str:
 
 
 def rcon_command(command: str) -> str:
-    """Send an RCON command via the Source RCON protocol."""
-    if not RCON_PASSWORD:
-        return "[RCON Error] RCON_PASSWORD is not configured"
-
-    try:
-        with socket.create_connection((RCON_HOST, RCON_PORT), timeout=5) as sock:
-            sock.settimeout(5)
-
-            def send_packet(packet_id: int, packet_type: int, body_text: str) -> None:
-                body = body_text.encode("utf-8") + b"\x00\x00"
-                payload = struct.pack("<ii", packet_id, packet_type) + body
-                sock.sendall(struct.pack("<i", len(payload)) + payload)
-
-            def recv_packet() -> tuple[int, int, str]:
-                header = sock.recv(4)
-                if len(header) != 4:
-                    raise RuntimeError("short response header")
-                size = struct.unpack("<i", header)[0]
-                data = b""
-                while len(data) < size:
-                    chunk = sock.recv(size - len(data))
-                    if not chunk:
-                        break
-                    data += chunk
-                if len(data) < 10:
-                    raise RuntimeError("short response body")
-                packet_id, packet_type = struct.unpack("<ii", data[:8])
-                body = data[8:-2].decode("utf-8", errors="replace")
-                return packet_id, packet_type, body
-
-            send_packet(1, 3, RCON_PASSWORD)
-            packet_id, _, _ = recv_packet()
-            if packet_id == -1:
-                return "[RCON Error] Auth failed"
-
-            send_packet(2, 2, command)
-            responses: list[str] = []
-            sock.settimeout(1)
-            while True:
-                try:
-                    _, _, body = recv_packet()
-                    if body.strip():
-                        responses.append(body.strip())
-                except socket.timeout:
-                    break
-
-        return "\n".join(responses)
-    except Exception as exc:
-        return f"[RCON Error] {exc}"
+    """Send an RCON command to the configured Palworld server."""
+    return send_rcon_command(RCON_HOST, RCON_PORT, RCON_PASSWORD, command, timeout=RCON_TIMEOUT_SECONDS)
 
 
 def get_server_status() -> dict[str, Any]:
@@ -2260,11 +2223,22 @@ def get_game_version() -> str:
     return ""
 
 
+def cached_players_response() -> str:
+    global _player_response_cache
+    with _player_response_lock:
+        cached_at, cached_response = _player_response_cache
+        if time.monotonic() - cached_at < PLAYER_CACHE_TTL_SECONDS:
+            return cached_response
+        response = rcon_command("ShowPlayers")
+        _player_response_cache = (time.monotonic(), response)
+        return response
+
+
 def get_server_info() -> dict[str, Any]:
     settings = parse_palworld_settings()
-    players_response = rcon_command("ShowPlayers")
     player_list_enabled = settings.get("bShowPlayerList", "False") == "True"
-    players_query_ok = not players_response.startswith("[RCON Error]")
+    players_response = cached_players_response() if player_list_enabled else ""
+    players_query_ok = player_list_enabled and not players_response.startswith("[RCON Error]")
     players_response_empty = players_query_ok and not players_response.strip()
     return {
         "server_name": unquote_setting(settings.get("ServerName", "")),

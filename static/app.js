@@ -94,7 +94,6 @@ const configGroups = [
             ["ServerName", "服务器名称", "text"],
             ["ServerDescription", "服务器描述", "text"],
             ["ServerPassword", "服务器密码", "text"],
-            ["AdminPassword", "管理员密码", "text"],
             ["ServerPlayerMaxNum", "最大玩家数", "number", { step: "1", min: 1, max: 128 }],
             ["GuildPlayerMaxNum", "公会最大人数", "number", { step: "1", min: 1, max: 100 }],
             ["CoopPlayerMaxNum", "合作玩家人数", "number", { step: "1", min: 1, max: 32 }],
@@ -304,7 +303,6 @@ const configDefaults = {
     ServerName: "Default Palworld Server",
     ServerDescription: "",
     ServerPassword: "",
-    AdminPassword: "",
     bAllowClientMod: "True",
     RESTAPIEnabled: "False",
     RESTAPIPort: "8212",
@@ -3118,6 +3116,7 @@ async function executeRconCommand(command) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ command }),
+            timeout: 15000,
         });
         appendConsoleLine(data.response || data.message || "OK", data.success ? "response" : "error");
     } catch (error) {

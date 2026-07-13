@@ -13,6 +13,8 @@ COPY . /app
 
 RUN mkdir -p /app/data/config-backups /app/data/save-slots /palworld
 
+RUN python -m unittest discover -s tests
+
 EXPOSE 8080
 
 CMD ["gunicorn", "--config", "/app/gunicorn.conf.py", "app:app"]
