@@ -30,8 +30,6 @@ services:
       - "${PALWORLD_PORT:-8211}:8211/udp"
       - "${PALWORLD_QUERY_PORT:-27015}:27015/udp"
       - "${RCON_PORT:-25575}:25575/tcp"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./data/palworld:/palworld
       - ./data/steamcmd:/steamcmd
@@ -74,6 +72,8 @@ services:
       PALWORLD_MOD_MODE: ${PALWORLD_MOD_MODE:-pak-safe}
     ports:
       - "${PANEL_PORT:-8080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data/panel:/app/data
       - ./data/palworld:/palworld

@@ -14,7 +14,7 @@ SERVER_MAX_PLAYERS="${SERVER_MAX_PLAYERS:-32}"
 STEAMCMD_RETRIES="${STEAMCMD_RETRIES:-8}"
 STEAMCMD_RETRY_DELAY="${STEAMCMD_RETRY_DELAY:-30}"
 PALWORLD_START_ON_STEAMCMD_FAILURE="${PALWORLD_START_ON_STEAMCMD_FAILURE:-true}"
-PALWORLD_INSTALL_STATUS_FILE="${PALWORLD_INSTALL_STATUS_FILE:-${PALWORLD_DIR}/.panel-install-status.json}"
+PALWORLD_UPDATE_REQUEST_FILE="${PALWORLD_UPDATE_REQUEST_FILE:-${PALWORLD_DIR}/.panel-update-request}"
 PALWORLD_USER="${PALWORLD_USER:-palworld}"
 PALWORLD_UID="${PALWORLD_UID:-1000}"
 PALWORLD_GID="${PALWORLD_GID:-1000}"
@@ -23,8 +23,10 @@ write_status() {
   local phase="$1"
   local message="$2"
   local success="${3:-true}"
-  mkdir -p "$(dirname "${PALWORLD_INSTALL_STATUS_FILE}")"
-  python3 - "$PALWORLD_INSTALL_STATUS_FILE" "$phase" "$message" "$success" <<'PY'
+  local status_file="${PALWORLD_INSTALL_STATUS_FILE:-${PALWORLD_DIR}/.panel-install-status.json}"
+
+  mkdir -p "$(dirname "${status_file}")"
+  python3 - "${status_file}" "${phase}" "${message}" "${success}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -58,43 +60,77 @@ fi
 
 chown -R "${PALWORLD_USER}:${PALWORLD_USER}" "${STEAMCMD_DIR}" "${PALWORLD_DIR}"
 
-if [[ ! -x "${STEAMCMD_DIR}/steamcmd.sh" ]]; then
-  echo "[entrypoint] Installing SteamCMD"
-  write_status "steamcmd" "Installing SteamCMD"
-  curl -fsSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" -o "${STEAMCMD_DIR}/steamcmd_linux.tar.gz"
-  tar -xzf "${STEAMCMD_DIR}/steamcmd_linux.tar.gz" -C "${STEAMCMD_DIR}"
-  chown -R "${PALWORLD_USER}:${PALWORLD_USER}" "${STEAMCMD_DIR}"
+has_existing_installation() {
+  [[ -x "${PALWORLD_DIR}/PalServer.sh" ]]
+}
+
+update_mode="normal"
+if [[ -f "${PALWORLD_UPDATE_REQUEST_FILE}" ]]; then
+  requested_mode="$(tr -d '[:space:]' < "${PALWORLD_UPDATE_REQUEST_FILE}")"
+  rm -f "${PALWORLD_UPDATE_REQUEST_FILE}"
+  case "${requested_mode}" in
+    update|validate)
+      update_mode="${requested_mode}"
+      ;;
+    *)
+      echo "[entrypoint] Ignoring invalid update request mode: ${requested_mode:-empty}" >&2
+      ;;
+  esac
 fi
 
-echo "[entrypoint] Installing/updating Palworld Dedicated Server"
-write_status "installing" "Installing/updating Palworld Dedicated Server"
-attempt=1
-until runuser -u "${PALWORLD_USER}" -- "${STEAMCMD_DIR}/steamcmd.sh" \
-    +@sSteamCmdForcePlatformType linux \
-    +@sSteamCmdForcePlatformBitness 64 \
-    +force_install_dir "${PALWORLD_DIR}" \
-    +login anonymous \
-    +app_update "${PALWORLD_APP_ID}" validate \
-    +quit; do
-  if [[ -x "${PALWORLD_DIR}/PalServer.sh" && "${PALWORLD_START_ON_STEAMCMD_FAILURE}" =~ ^([Tt]rue|1|yes|on)$ ]]; then
-    echo "[entrypoint] SteamCMD failed on attempt ${attempt}/${STEAMCMD_RETRIES}; starting existing Palworld installation" >&2
-    write_status "starting" "SteamCMD update failed; starting existing Palworld installation" "true"
-    break
+if has_existing_installation && [[ "${update_mode}" == "normal" ]]; then
+  echo "[entrypoint] Using existing Palworld installation; SteamCMD update is not requested"
+  write_status "starting" "Using existing Palworld installation"
+else
+  if [[ ! -x "${STEAMCMD_DIR}/steamcmd.sh" ]]; then
+    echo "[entrypoint] Installing SteamCMD"
+    write_status "steamcmd" "Installing SteamCMD"
+    curl -fsSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" -o "${STEAMCMD_DIR}/steamcmd_linux.tar.gz"
+    tar -xzf "${STEAMCMD_DIR}/steamcmd_linux.tar.gz" -C "${STEAMCMD_DIR}"
+    chown -R "${PALWORLD_USER}:${PALWORLD_USER}" "${STEAMCMD_DIR}"
   fi
 
-  if [[ "${attempt}" -ge "${STEAMCMD_RETRIES}" ]]; then
-    echo "[entrypoint] SteamCMD failed after ${attempt} attempts" >&2
-    write_status "failed" "SteamCMD install/update failed after ${attempt} attempts" "false"
-    exit 1
+  if [[ "${update_mode}" == "validate" ]]; then
+    steamcmd_action="Validating Palworld Dedicated Server"
+    steamcmd_args=(+app_update "${PALWORLD_APP_ID}" validate)
+  elif has_existing_installation; then
+    steamcmd_action="Updating Palworld Dedicated Server"
+    steamcmd_args=(+app_update "${PALWORLD_APP_ID}")
+  else
+    steamcmd_action="Installing Palworld Dedicated Server"
+    steamcmd_args=(+app_update "${PALWORLD_APP_ID}")
   fi
 
-  echo "[entrypoint] SteamCMD failed on attempt ${attempt}/${STEAMCMD_RETRIES}; retrying in ${STEAMCMD_RETRY_DELAY}s" >&2
-  write_status "retrying" "SteamCMD failed on attempt ${attempt}/${STEAMCMD_RETRIES}; retrying in ${STEAMCMD_RETRY_DELAY}s" "false"
-  attempt=$((attempt + 1))
-  sleep "${STEAMCMD_RETRY_DELAY}"
-done
+  echo "[entrypoint] ${steamcmd_action}"
+  write_status "installing" "${steamcmd_action}"
+  attempt=1
+  until runuser -u "${PALWORLD_USER}" -- "${STEAMCMD_DIR}/steamcmd.sh" \
+      +@sSteamCmdForcePlatformType linux \
+      +@sSteamCmdForcePlatformBitness 64 \
+      +force_install_dir "${PALWORLD_DIR}" \
+      +login anonymous \
+      "${steamcmd_args[@]}" \
+      +quit; do
+    if has_existing_installation && [[ "${PALWORLD_START_ON_STEAMCMD_FAILURE}" =~ ^([Tt]rue|1|yes|on)$ ]]; then
+      echo "[entrypoint] SteamCMD ${update_mode} failed on attempt ${attempt}/${STEAMCMD_RETRIES}; starting existing Palworld installation" >&2
+      write_status "starting" "SteamCMD ${update_mode} failed; starting existing Palworld installation" "true"
+      break
+    fi
 
-if [[ ! -x "${PALWORLD_DIR}/PalServer.sh" ]]; then
+    if [[ "${attempt}" -ge "${STEAMCMD_RETRIES}" ]]; then
+      echo "[entrypoint] SteamCMD failed after ${attempt} attempts" >&2
+      write_status "failed" "SteamCMD install/update failed after ${attempt} attempts" "false"
+      exit 1
+    fi
+
+    echo "[entrypoint] SteamCMD failed on attempt ${attempt}/${STEAMCMD_RETRIES}; retrying in ${STEAMCMD_RETRY_DELAY}s" >&2
+    write_status "retrying" "SteamCMD failed on attempt ${attempt}/${STEAMCMD_RETRIES}; retrying in ${STEAMCMD_RETRY_DELAY}s" "false"
+    attempt=$((attempt + 1))
+    sleep "${STEAMCMD_RETRY_DELAY}"
+  done
+fi
+
+if ! has_existing_installation; then
   echo "[entrypoint] PalServer.sh was not created by SteamCMD" >&2
   write_status "failed" "SteamCMD finished but PalServer.sh is missing" "false"
   exit 1
@@ -116,7 +152,7 @@ EOF
   fi
 fi
 
-python3 - "$SETTINGS_FILE" <<'PY'
+python3 - "${SETTINGS_FILE}" <<'PY'
 import os
 import re
 import sys
@@ -133,6 +169,7 @@ values = {
     "PublicPort": os.environ.get("PALWORLD_PORT", "8211"),
     "QueryPort": os.environ.get("PALWORLD_QUERY_PORT", "27015"),
     "RCONEnabled": "True",
+    "bShowPlayerList": "True",
     "RCONPort": os.environ.get("RCON_PORT", "25575"),
     "AdminPassword": '"' + os.environ["RCON_PASSWORD"].replace('"', '\\"') + '"',
 }

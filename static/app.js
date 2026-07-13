@@ -95,10 +95,18 @@ const configGroups = [
             ["ServerDescription", "服务器描述", "text"],
             ["ServerPassword", "服务器密码", "text"],
             ["AdminPassword", "管理员密码", "text"],
-            ["ServerPlayerMaxNum", "最大玩家数", "number"],
-            ["GuildPlayerMaxNum", "公会最大人数", "number"],
-            ["AutoSaveSpan", "自动存档间隔(秒)", "number", "1"],
-            ["ChatPostLimitPerMinute", "聊天限速(条/分钟)", "number"],
+            ["ServerPlayerMaxNum", "最大玩家数", "number", { step: "1", min: 1, max: 128 }],
+            ["GuildPlayerMaxNum", "公会最大人数", "number", { step: "1", min: 1, max: 100 }],
+            ["CoopPlayerMaxNum", "合作玩家人数", "number", { step: "1", min: 1, max: 32 }],
+            ["AutoSaveSpan", "自动存档间隔(秒)", "number", { step: "1", min: 1, max: 3600 }],
+            ["ChatPostLimitPerMinute", "聊天限速(条/分钟)", "number", { step: "1", min: 0, max: 1000 }],
+            ["bShowPlayerList", "显示在线玩家列表", "bool", { hint: "开启后面板可通过 RCON 显示在线玩家。" }],
+            ["bIsMultiplay", "启用多人模式", "bool"],
+            ["bEnableAimAssistPad", "手柄瞄准辅助", "bool"],
+            ["bEnableAimAssistKeyboard", "键鼠瞄准辅助", "bool"],
+            ["bActiveUNKO", "启用特殊世界规则", "bool"],
+            ["bIsShowJoinLeftMessage", "显示加入/离开消息", "bool"],
+            ["bIsUseBackupSaveData", "启用游戏内备份存档", "bool"],
         ],
     },
     {
@@ -106,33 +114,35 @@ const configGroups = [
         title: "倍率设置",
         fields: [
             ["ExpRate", "经验倍率", "number", { step: "0.1", min: 0.1, max: 20, hint: "范围：0.1 - 20，默认 1" }],
-            ["DayTimeSpeedRate", "白天速度", "number", { step: "0.1", min: 0.1, max: 5, hint: "范围：0.1 - 5，默认 1" }],
-            ["NightTimeSpeedRate", "夜晚速度", "number", { step: "0.1", min: 0.1, max: 5, hint: "范围：0.1 - 5，默认 1" }],
-            ["WorkSpeedRate", "工作速度", "number", { step: "0.1", min: 0.5, max: 5, hint: "范围：0.5 - 5，默认 1" }],
-            ["ItemWeightRate", "物品重量倍率", "number", { step: "0.1", min: 0.1, max: 5, hint: "范围：0.1 - 5，默认 1；越低物品越轻" }],
-        ],
-    },
-    {
-        icon: "✦",
-        title: "系统概率",
-        fields: [
-            ["PalCaptureRate", "帕鲁捕获概率", "number", { step: "0.1", min: 0.5, max: 2, hint: "范围：0.5 - 2，默认 1；越高越容易捕获" }],
-            ["PalSpawnNumRate", "帕鲁刷新概率", "number", { step: "0.1", min: 0.5, max: 3, hint: "范围：0.5 - 3，默认 1；调高会增加服务器性能压力" }],
-            ["CollectionDropRate", "采集掉落概率", "number", { step: "0.1", min: 0.5, max: 3, hint: "范围：0.5 - 3，默认 1；影响采集资源掉落" }],
-            ["EnemyDropItemRate", "敌人掉落概率", "number", { step: "0.1", min: 0.5, max: 3, hint: "范围：0.5 - 3，默认 1；影响击败敌人的物品掉落" }],
-            ["DropItemMaxNum", "掉落物上限", "number", { step: "100", min: 0, max: 10000, hint: "建议范围：0 - 10000，默认 3000；过高会增加性能压力" }],
-            ["DropItemAliveMaxHours", "掉落物保留时间(时)", "number", { step: "0.5", min: 0.5, max: 24, hint: "建议范围：0.5 - 24，默认 1；越高掉落物保留越久" }],
-            ["SupplyDropSpan", "空投间隔(分)", "number", { step: "1", min: 1, max: 1440, hint: "建议范围：1 - 1440，默认 180；单位是分钟" }],
+            ["DayTimeSpeedRate", "白天速度", "number", { step: "0.1", min: 0.1, max: 5 }],
+            ["NightTimeSpeedRate", "夜晚速度", "number", { step: "0.1", min: 0.1, max: 5 }],
+            ["WorkSpeedRate", "工作速度", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["ItemWeightRate", "物品重量倍率", "number", { step: "0.1", min: 0.1, max: 10, hint: "越低物品越轻。" }],
+            ["ItemCorruptionMultiplier", "物品腐化倍率", "number", { step: "0.1", min: 0, max: 10 }],
+            ["MonsterFarmActionSpeedRate", "牧场动作速度倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PalCaptureRate", "帕鲁捕获概率", "number", { step: "0.1", min: 0.1, max: 5 }],
+            ["PalSpawnNumRate", "帕鲁刷新倍率", "number", { step: "0.1", min: 0.1, max: 5, hint: "调高会增加服务器性能压力。" }],
+            ["CollectionDropRate", "采集掉落倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["EnemyDropItemRate", "敌人掉落倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["EquipmentDurabilityDamageRate", "装备耐久损耗倍率", "number", { step: "0.1", min: 0, max: 10, hint: "0 表示不损耗耐久。" }],
         ],
     },
     {
         icon: "⚔",
-        title: "战斗设置",
+        title: "战斗与生存",
         fields: [
-            ["PalDamageRateAttack", "帕鲁攻击力倍率", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越高帕鲁造成伤害越高" }],
-            ["PalDamageRateDefense", "帕鲁受伤倍率", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越低帕鲁越抗打" }],
-            ["PlayerDamageRateAttack", "玩家攻击力倍率", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越高玩家造成伤害越高" }],
-            ["PlayerDamageRateDefense", "玩家受伤倍率", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越低玩家越抗打" }],
+            ["PalDamageRateAttack", "帕鲁攻击力倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PalDamageRateDefense", "帕鲁受伤倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PlayerDamageRateAttack", "玩家攻击力倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PlayerDamageRateDefense", "玩家受伤倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PlayerStomachDecreaceRate", "玩家饥饿速率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PlayerStaminaDecreaceRate", "玩家体力消耗", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PlayerAutoHPRegeneRate", "玩家自动回血", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PlayerAutoHpRegeneRateInSleep", "玩家睡觉回血", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PalStomachDecreaceRate", "帕鲁饥饿速率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PalStaminaDecreaceRate", "帕鲁体力消耗", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PalAutoHPRegeneRate", "帕鲁自动回血", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["PalAutoHpRegeneRateInSleep", "Palbox 内回血", "number", { step: "0.1", min: 0.1, max: 10 }],
             ["bEnablePlayerToPlayerDamage", "玩家对战伤害", "bool"],
             ["bEnableFriendlyFire", "友军伤害", "bool"],
             ["bIsPvP", "PvP 模式", "bool"],
@@ -141,78 +151,109 @@ const configGroups = [
     },
     {
         icon: "⌂",
-        title: "生存与建造",
+        title: "世界、建造与据点",
         fields: [
-            ["PlayerStomachDecreaceRate", "玩家饥饿速率", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越低饥饿越慢" }],
-            ["PlayerStaminaDecreaceRate", "玩家体力消耗", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越低体力消耗越慢" }],
-            ["PlayerAutoHPRegeneRate", "玩家自动回血", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越高回血越快" }],
-            ["PlayerAutoHpRegeneRateInSleep", "玩家睡觉回血", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越高睡觉回血越快" }],
-            ["PalStomachDecreaceRate", "帕鲁饥饿速率", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越低帕鲁饥饿越慢" }],
-            ["PalStaminaDecreaceRate", "帕鲁体力消耗", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越低帕鲁体力消耗越慢" }],
-            ["PalAutoHPRegeneRate", "帕鲁自动回血", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越高回血越快" }],
-            ["PalAutoHpRegeneRateInSleep", "帕鲁睡觉回血", "number", { step: "0.1", min: 0.1, max: 5, hint: "建议范围：0.1 - 5，默认 1；越高 Palbox 内回血越快" }],
-            ["BuildObjectHpRate", "建筑生命倍率", "number", { step: "0.1", min: 0.1, max: 10, hint: "建议范围：0.1 - 10，默认 1；越高建筑越耐久" }],
-            ["BuildObjectDamageRate", "建筑受伤倍率", "number", { step: "0.1", min: 0.1, max: 10, hint: "建议范围：0.1 - 10，默认 1；越低建筑越抗打" }],
-            ["BuildObjectDeteriorationDamageRate", "建筑腐蚀速率", "number", { step: "0.1", min: 0, max: 10, hint: "建议范围：0 - 10，默认 1；0 通常表示关闭腐蚀" }],
-            ["CollectionObjectHpRate", "采集物生命倍率", "number", { step: "0.1", min: 0.5, max: 3, hint: "建议范围：0.5 - 3，默认 1；越高采集物更耐打" }],
-            ["CollectionObjectRespawnSpeedRate", "采集物刷新速度", "number", { step: "0.1", min: 0.5, max: 3, hint: "建议范围：0.5 - 3，默认 1；越高刷新越快" }],
-            ["BaseCampMaxNum", "据点最大数量", "number"],
-            ["BaseCampWorkerMaxNum", "据点工人数上限", "number"],
-            ["BaseCampMaxNumInGuild", "公会据点上限", "number"],
+            ["Difficulty", "世界难度", "select", [["None", "自定义"], ["Casual", "休闲"], ["Normal", "普通"], ["Hard", "困难"], ["Hardcore", "极限"]]],
+            ["RandomizerType", "随机化类型", "select", [["None", "关闭"], ["Pal", "仅帕鲁"], ["MapObject", "仅地图物件"], ["All", "全部"]]],
+            ["RandomizerSeed", "随机化种子", "text"],
+            ["bIsRandomizerPalLevelRandom", "随机化帕鲁等级", "bool"],
+            ["DeathPenalty", "死亡惩罚", "select", [["None", "无"], ["Item", "仅物品"], ["ItemAndEquipment", "物品+装备"], ["All", "全部"]]],
+            ["PalEggDefaultHatchingTime", "帕鲁蛋孵化时间(时)", "number", { step: "0.5", min: 0, max: 240 }],
+            ["BuildObjectHpRate", "建筑生命倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["BuildObjectDamageRate", "建筑受伤倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["BuildObjectDeteriorationDamageRate", "建筑腐蚀倍率", "number", { step: "0.1", min: 0, max: 10, hint: "0 表示关闭腐蚀。" }],
+            ["CollectionObjectHpRate", "采集物生命倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["CollectionObjectRespawnSpeedRate", "采集物刷新倍率", "number", { step: "0.1", min: 0.1, max: 10 }],
+            ["BaseCampMaxNum", "据点最大数量", "number", { step: "1", min: 1, max: 512 }],
+            ["BaseCampWorkerMaxNum", "据点工人数上限", "number", { step: "1", min: 1, max: 100 }],
+            ["BaseCampMaxNumInGuild", "公会据点上限", "number", { step: "1", min: 1, max: 512 }],
+            ["bBuildAreaLimit", "限制建筑区域", "bool"],
+            ["bAllowGlobalPalboxExport", "允许全局 Palbox 导出", "bool"],
+            ["bAllowGlobalPalboxImport", "允许全局 Palbox 导入", "bool"],
         ],
     },
     {
         icon: "◎",
-        title: "玩法与网络",
+        title: "玩法规则与社交",
         fields: [
-            ["DeathPenalty", "死亡惩罚", "select", [["None", "无"], ["Item", "仅物品"], ["ItemAndEquipment", "物品+装备"], ["All", "全部"]]],
-            ["PalEggDefaultHatchingTime", "帕鲁蛋孵化时间(时)", "number", { step: "0.5", min: 0, max: 240, hint: "建议范围：0 - 240，默认 72；0 通常表示立即孵化" }],
-            ["EquipmentDurabilityDamageRate", "装备耐久损耗倍率", "number", { step: "0.1", min: 0, max: 5, hint: "建议范围：0 - 5，默认 1；0 通常表示不损耗耐久" }],
-            ["AutoResetGuildTimeNoOnlinePlayers", "无玩家自动解散公会时间(时)", "number", { step: "1", min: 0, max: 720, hint: "建议范围：0 - 720，默认 72；0 通常表示关闭自动解散" }],
+            ["bHardcore", "困难模式", "bool"],
+            ["bPalLost", "帕鲁永久丢失", "bool"],
+            ["bCharacterRecreateInHardcore", "困难模式可重建角色", "bool"],
+            ["bCanPickupOtherGuildDeathPenaltyDrop", "可拾取其他公会死亡掉落", "bool"],
+            ["bEnableNonLoginPenalty", "启用离线惩罚", "bool"],
+            ["bExistPlayerAfterLogout", "玩家离线后保留角色", "bool"],
+            ["bEnableDefenseOtherGuildPlayer", "允许防御其他公会玩家", "bool"],
+            ["bInvisibleOtherGuildBaseCampAreaFX", "隐藏其他公会据点特效", "bool"],
             ["bEnableFastTravel", "快速旅行", "bool"],
             ["bEnableFastTravelOnlyBaseCamp", "仅基地快速旅行", "bool"],
-            ["bIsStartLocationSelectByMap", "选择出生点", "bool"],
+            ["bIsStartLocationSelectByMap", "地图选择出生点", "bool"],
             ["bAllowClientMod", "允许客户端 MOD", "bool"],
-            ["bIsShowJoinLeftMessage", "显示加入/离开消息", "bool"],
-            ["bShowPlayerList", "显示玩家列表", "bool"],
-            ["bIsUseBackupSaveData", "启用备份存档", "bool"],
-            ["EnablePredatorBossPal", "捕食者 Boss 帕鲁", "bool"],
-            ["bHardcore", "困难模式", "bool"],
-            ["bPalLost", "帕鲁丢失", "bool"],
-            ["RCONPort", "RCON 端口", "number", { step: "1", min: 1024, max: 65535, hint: "范围：1024 - 65535，默认 25575；修改后面板环境变量也要同步" }],
-            ["RESTAPIPort", "REST API 端口", "number", { step: "1", min: 1024, max: 65535, hint: "范围：1024 - 65535，默认 8212" }],
-            ["RCONEnabled", "RCON 启用", "bool"],
-            ["RESTAPIEnabled", "REST API 启用", "bool"],
+            ["bEnableVoiceChat", "启用语音聊天", "bool"],
+            ["VoiceChatMaxVolumeDistance", "语音最大音量距离", "number", { step: "100", min: 0, max: 100000 }],
+            ["VoiceChatZeroVolumeDistance", "语音静音距离", "number", { step: "100", min: 0, max: 100000 }],
+            ["DenyTechnologyList", "禁用科技列表", "text", { hint: "以英文逗号分隔科技 ID；留空表示不限制。" }],
+            ["bAllowEnhanceStat_Health", "允许强化生命", "bool"],
+            ["bAllowEnhanceStat_Attack", "允许强化攻击", "bool"],
+            ["bAllowEnhanceStat_Stamina", "允许强化体力", "bool"],
+            ["bAllowEnhanceStat_Weight", "允许强化负重", "bool"],
+            ["bAllowEnhanceStat_WorkSpeed", "允许强化工作速度", "bool"],
+        ],
+    },
+    {
+        icon: "✦",
+        title: "掉落、复活与公会",
+        fields: [
+            ["DropItemMaxNum", "掉落物上限", "number", { step: "100", min: 0, max: 10000, hint: "过高会增加服务器性能压力。" }],
+            ["DropItemMaxNum_UNKO", "特殊掉落物上限", "number", { step: "10", min: 0, max: 10000 }],
+            ["DropItemAliveMaxHours", "掉落物保留时间(时)", "number", { step: "0.5", min: 0.1, max: 240 }],
+            ["SupplyDropSpan", "空投间隔(分)", "number", { step: "1", min: 1, max: 1440 }],
+            ["bAutoResetGuildNoOnlinePlayers", "无人在线自动解散公会", "bool"],
+            ["AutoResetGuildTimeNoOnlinePlayers", "自动解散公会时间(时)", "number", { step: "1", min: 0, max: 720 }],
+            ["GuildRejoinCooldownMinutes", "公会重加冷却(分)", "number", { step: "1", min: 0, max: 10080 }],
+            ["BlockRespawnTime", "复活阻塞时间(秒)", "number", { step: "1", min: 0, max: 3600 }],
+            ["RespawnPenaltyDurationThreshold", "复活惩罚阈值(秒)", "number", { step: "1", min: 0, max: 3600 }],
+            ["RespawnPenaltyTimeScale", "复活惩罚时间倍率", "number", { step: "0.1", min: 0, max: 10 }],
+            ["bDisplayPvPItemNumOnWorldMap_BaseCamp", "地图显示据点 PvP 掉落数", "bool"],
+            ["bDisplayPvPItemNumOnWorldMap_Player", "地图显示玩家 PvP 掉落数", "bool"],
+            ["AdditionalDropItemWhenPlayerKillingInPvPMode", "PvP 额外掉落类型", "select", [["None", "无"], ["PlayerDropItem", "玩家掉落物"], ["All", "全部"]]],
+            ["AdditionalDropItemNumWhenPlayerKillingInPvPMode", "PvP 额外掉落数量", "number", { step: "1", min: 0, max: 100 }],
+            ["bAdditionalDropItemWhenPlayerKillingInPvPMode", "启用 PvP 额外掉落", "bool"],
+        ],
+    },
+    {
+        icon: "⚙",
+        title: "高级与性能",
+        fields: [
+            ["PhysicsActiveDropItemMaxNum", "物理掉落物上限", "number", { step: "100", min: -1, max: 10000, hint: "-1 使用游戏默认值；调高会增加性能压力。" }],
+            ["MaxBuildingLimitNum", "建筑总数上限", "number", { step: "100", min: 0, max: 100000, hint: "0 使用游戏默认值；过高会增加性能压力。" }],
+            ["ServerReplicatePawnCullDistance", "网络复制距离", "number", { step: "500", min: 1000, max: 100000, hint: "较高数值会增加网络与 CPU 压力。" }],
+            ["ItemContainerForceMarkDirtyInterval", "容器同步间隔(秒)", "number", { step: "0.1", min: 0.1, max: 60, hint: "较低数值会增加服务器负载。" }],
+            ["PlayerDataPalStorageUpdateCheckTickInterval", "帕鲁仓库检查间隔(秒)", "number", { step: "0.1", min: 0.1, max: 60, hint: "较低数值会增加服务器负载。" }],
+            ["AutoTransferMasterCheckIntervalSeconds", "公会主控检查间隔(秒)", "number", { step: "60", min: 60, max: 604800 }],
+            ["AutoTransferMasterThresholdDays", "公会主控转移阈值(天)", "number", { step: "1", min: 0, max: 365 }],
+            ["MaxGuildsPerFrame", "每帧处理公会数", "number", { step: "1", min: 1, max: 1000, hint: "较高数值会增加 CPU 压力。" }],
+            ["BuildingNameDisplayCacheTTLSeconds", "建筑名称缓存时间(秒)", "number", { step: "1", min: 0, max: 3600 }],
+            ["bEnableBuildingPlayerUIdDisplay", "显示建筑所属玩家 ID", "bool"],
+            ["RESTAPIEnabled", "启用 REST API", "bool"],
+            ["RESTAPIPort", "REST API 端口", "number", { step: "1", min: 1024, max: 65535, hint: "仅修改游戏 REST API 端口，不会修改 Docker 发布端口。" }],
         ],
     },
 ];
 
 const configDefaults = {
-    ServerName: "Default Palworld Server",
-    ServerDescription: "",
-    ServerPassword: "",
-    AdminPassword: "",
-    ServerPlayerMaxNum: "32",
-    GuildPlayerMaxNum: "20",
-    AutoSaveSpan: "30.000000",
-    ChatPostLimitPerMinute: "30",
+    Difficulty: "None",
+    RandomizerType: "None",
+    RandomizerSeed: "",
+    bIsRandomizerPalLevelRandom: "False",
+    DayTimeSpeedRate: "1.000000",
+    NightTimeSpeedRate: "1.000000",
     ExpRate: "1.000000",
     PalCaptureRate: "1.000000",
     PalSpawnNumRate: "1.000000",
-    DayTimeSpeedRate: "1.000000",
-    NightTimeSpeedRate: "1.000000",
-    WorkSpeedRate: "1.000000",
-    CollectionDropRate: "1.000000",
-    EnemyDropItemRate: "1.000000",
-    ItemWeightRate: "1.000000",
     PalDamageRateAttack: "1.000000",
     PalDamageRateDefense: "1.000000",
     PlayerDamageRateAttack: "1.000000",
     PlayerDamageRateDefense: "1.000000",
-    bEnablePlayerToPlayerDamage: "False",
-    bEnableFriendlyFire: "False",
-    bIsPvP: "False",
-    bEnableInvaderEnemy: "True",
     PlayerStomachDecreaceRate: "1.000000",
     PlayerStaminaDecreaceRate: "1.000000",
     PlayerAutoHPRegeneRate: "1.000000",
@@ -221,38 +262,97 @@ const configDefaults = {
     PalStaminaDecreaceRate: "1.000000",
     PalAutoHPRegeneRate: "1.000000",
     PalAutoHpRegeneRateInSleep: "1.000000",
-    DeathPenalty: "All",
     BuildObjectHpRate: "1.000000",
     BuildObjectDamageRate: "1.000000",
     BuildObjectDeteriorationDamageRate: "1.000000",
+    CollectionDropRate: "1.000000",
+    CollectionObjectHpRate: "1.000000",
+    CollectionObjectRespawnSpeedRate: "1.000000",
+    EnemyDropItemRate: "1.000000",
+    DeathPenalty: "Item",
+    bEnablePlayerToPlayerDamage: "False",
+    bEnableFriendlyFire: "False",
+    bEnableInvaderEnemy: "True",
+    DropItemMaxNum: "3000",
+    PhysicsActiveDropItemMaxNum: "-1",
+    DropItemMaxNum_UNKO: "100",
     BaseCampMaxNum: "128",
     BaseCampWorkerMaxNum: "15",
     BaseCampMaxNumInGuild: "4",
-    CollectionObjectHpRate: "1.000000",
-    CollectionObjectRespawnSpeedRate: "1.000000",
-    DropItemMaxNum: "3000",
     DropItemAliveMaxHours: "1.000000",
-    PalEggDefaultHatchingTime: "72.000000",
-    EquipmentDurabilityDamageRate: "1.000000",
-    SupplyDropSpan: "180",
+    bAutoResetGuildNoOnlinePlayers: "False",
     AutoResetGuildTimeNoOnlinePlayers: "72.000000",
-    bEnableFastTravel: "True",
-    bEnableFastTravelOnlyBaseCamp: "False",
-    bIsStartLocationSelectByMap: "True",
-    bAllowClientMod: "True",
-    bIsShowJoinLeftMessage: "True",
-    bShowPlayerList: "False",
-    bIsUseBackupSaveData: "True",
-    EnablePredatorBossPal: "True",
+    GuildPlayerMaxNum: "20",
+    PalEggDefaultHatchingTime: "1.000000",
+    WorkSpeedRate: "1.000000",
+    AutoSaveSpan: "30.000000",
+    bIsPvP: "False",
     bHardcore: "False",
     bPalLost: "False",
-    RCONPort: "25575",
-    RESTAPIPort: "8212",
-    RCONEnabled: "True",
+    bCharacterRecreateInHardcore: "False",
+    bCanPickupOtherGuildDeathPenaltyDrop: "False",
+    bEnableNonLoginPenalty: "True",
+    bEnableFastTravel: "True",
+    bEnableFastTravelOnlyBaseCamp: "False",
+    bIsStartLocationSelectByMap: "False",
+    bExistPlayerAfterLogout: "False",
+    bEnableDefenseOtherGuildPlayer: "False",
+    bInvisibleOtherGuildBaseCampAreaFX: "False",
+    bBuildAreaLimit: "False",
+    ItemWeightRate: "1.000000",
+    CoopPlayerMaxNum: "4",
+    ServerName: "Default Palworld Server",
+    ServerDescription: "",
+    ServerPassword: "",
+    AdminPassword: "",
+    bAllowClientMod: "True",
     RESTAPIEnabled: "False",
+    RESTAPIPort: "8212",
+    bShowPlayerList: "False",
+    ChatPostLimitPerMinute: "30",
+    bIsUseBackupSaveData: "True",
+    EnablePredatorBossPal: "True",
+    bIsMultiplay: "False",
+    bActiveUNKO: "False",
+    bEnableAimAssistPad: "True",
+    bEnableAimAssistKeyboard: "False",
+    bIsShowJoinLeftMessage: "True",
+    SupplyDropSpan: "180",
+    MaxBuildingLimitNum: "0",
+    ServerReplicatePawnCullDistance: "15000.000000",
+    bAllowGlobalPalboxExport: "True",
+    bAllowGlobalPalboxImport: "False",
+    EquipmentDurabilityDamageRate: "1.000000",
+    ItemContainerForceMarkDirtyInterval: "1.000000",
+    PlayerDataPalStorageUpdateCheckTickInterval: "1.000000",
+    ItemCorruptionMultiplier: "1.000000",
+    MonsterFarmActionSpeedRate: "1.000000",
+    DenyTechnologyList: "",
+    GuildRejoinCooldownMinutes: "0",
+    AutoTransferMasterCheckIntervalSeconds: "3600.000000",
+    AutoTransferMasterThresholdDays: "14",
+    MaxGuildsPerFrame: "10",
+    BlockRespawnTime: "5.000000",
+    RespawnPenaltyDurationThreshold: "0.000000",
+    RespawnPenaltyTimeScale: "2.000000",
+    bDisplayPvPItemNumOnWorldMap_BaseCamp: "False",
+    bDisplayPvPItemNumOnWorldMap_Player: "False",
+    AdditionalDropItemWhenPlayerKillingInPvPMode: "PlayerDropItem",
+    AdditionalDropItemNumWhenPlayerKillingInPvPMode: "1",
+    bAdditionalDropItemWhenPlayerKillingInPvPMode: "False",
+    bEnableVoiceChat: "False",
+    VoiceChatMaxVolumeDistance: "3000.000000",
+    VoiceChatZeroVolumeDistance: "15000.000000",
+    bAllowEnhanceStat_Health: "True",
+    bAllowEnhanceStat_Attack: "True",
+    bAllowEnhanceStat_Stamina: "True",
+    bAllowEnhanceStat_Weight: "True",
+    bAllowEnhanceStat_WorkSpeed: "True",
+    bEnableBuildingPlayerUIdDisplay: "False",
+    BuildingNameDisplayCacheTTLSeconds: "60",
 };
 
-const stringFields = new Set(["ServerName", "ServerDescription", "ServerPassword", "AdminPassword"]);
+const stringFields = new Set(["ServerName", "ServerDescription", "ServerPassword", "AdminPassword", "RandomizerSeed", "DenyTechnologyList"]);
 
 function stripQuotes(value) {
     const text = String(value ?? "");
@@ -891,7 +991,10 @@ function switchTab(tab) {
 function renderStatus(data) {
     const { status, info } = data;
     const players = Array.isArray(info.online_players) ? info.online_players : [];
+    const playersQueryOk = Boolean(info.players_query_ok);
+    const playerListEnabled = Boolean(info.player_list_enabled);
     const playerTotal = players.length;
+    const playerCountAvailable = playersQueryOk && playerListEnabled;
     const maxPlayers = info.max_players || "0";
     const statusBadge = $("#statusBadge");
     const dockerPending = status.backend === "docker" && status.container_running && !status.ready;
@@ -911,24 +1014,28 @@ function renderStatus(data) {
 
     const gameVersion = info.game_version || "-";
     const gamePort = info.port || "-";
-    const playerCount = `${playerTotal} / ${maxPlayers}`;
+    const playerCount = playerCountAvailable ? `${playerTotal} / ${maxPlayers}` : "玩家列表不可用";
     const maxPlayerNumber = Math.max(0, Number(maxPlayers || 0));
-    const playerPercent = maxPlayerNumber ? (playerTotal / maxPlayerNumber) * 100 : 0;
+    const playerPercent = playerCountAvailable && maxPlayerNumber ? (playerTotal / maxPlayerNumber) * 100 : 0;
     $("#gameVersion").textContent = gameVersion;
     $("#gamePort").textContent = gamePort;
     $("#cockpitStatus") && ($("#cockpitStatus").textContent = statusText);
     $("#cockpitBackend") && ($("#cockpitBackend").textContent = `后端：${status.backend === "docker" ? "Docker" : "systemd"}`);
     $("#playerRingCount") && ($("#playerRingCount").textContent = playerCount);
-    $("#playerRingValue") && ($("#playerRingValue").textContent = `${Math.round(playerPercent)}%`);
+    $("#playerRingValue") && ($("#playerRingValue").textContent = playerCountAvailable ? `${Math.round(playerPercent)}%` : "-");
     setRing("playerRing", playerPercent);
     $("#serverName").textContent = info.server_name || "-";
     $("#serverDesc").textContent = dockerPending ? (status.message || "Docker 正在准备 Palworld 服务端") : (info.server_description || "暂无服务器描述");
     const backendText = status.backend === "docker" ? "Docker" : "systemd";
     $("#serverUptime").textContent = status.start_time ? `模式：${backendText} · 启动时间：${status.start_time}` : `模式：${backendText}`;
-    $("#playerCountBadge").textContent = `${playerTotal} 人`;
+    $("#playerCountBadge").textContent = playerCountAvailable ? `${playerTotal} 人` : "不可用";
 
     updateActionButtons(status.running, status.container_running);
-    renderPlayers(players);
+    renderPlayers(players, {
+        queryOk: playersQueryOk,
+        playerListEnabled,
+        responseEmpty: Boolean(info.players_response_empty),
+    });
 }
 
 function formatBytes(bytes) {
@@ -1100,8 +1207,16 @@ function updateActionButtons(isRunning, containerRunning = false) {
     }
 }
 
-function renderPlayers(players) {
+function renderPlayers(players, stateInfo = {}) {
     const list = $("#playerList");
+    if (!stateInfo.playerListEnabled) {
+        list.innerHTML = `<tr><td colspan="3" class="empty">玩家列表已关闭；请在服务器基础设置中开启“显示在线玩家列表”并重启服务器。</td></tr>`;
+        return;
+    }
+    if (!stateInfo.queryOk) {
+        list.innerHTML = `<tr><td colspan="3" class="empty">无法通过 RCON 获取玩家列表，请检查 RCON 状态。</td></tr>`;
+        return;
+    }
     if (!players.length) {
         list.innerHTML = `<tr><td colspan="3" class="empty">暂无在线玩家</td></tr>`;
         return;

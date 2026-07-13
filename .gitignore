@@ -13,3 +13,7 @@ data/
 .DS_Store
 .vscode/
 .idea/
+
+# Local ZCode operational backups
+.zcode-backups/
+*.before-*
