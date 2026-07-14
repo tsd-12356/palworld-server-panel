@@ -9,6 +9,7 @@ stay free of machine passwords.
 
 from __future__ import annotations
 
+import base64
 import math
 import os
 import json
@@ -53,8 +54,15 @@ RCON_HOST = os.environ.get("RCON_HOST", "127.0.0.1")
 RCON_PORT = int(os.environ.get("RCON_PORT", "25575"))
 RCON_PASSWORD = os.environ.get("RCON_PASSWORD", "")
 RCON_TIMEOUT_SECONDS = float(os.environ.get("RCON_TIMEOUT_SECONDS", "10"))
+PALWORLD_REST_ENABLED = os.environ.get("PALWORLD_REST_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+PALWORLD_REST_HOST = os.environ.get("PALWORLD_REST_HOST", "127.0.0.1")
+PALWORLD_REST_PORT = int(os.environ.get("PALWORLD_REST_PORT", "8212"))
+PALWORLD_REST_PATH = os.environ.get("PALWORLD_REST_PATH", "/v1/api/players")
+PALWORLD_REST_USERNAME = os.environ.get("PALWORLD_REST_USERNAME", "admin")
+PALWORLD_REST_PASSWORD = os.environ.get("PALWORLD_REST_PASSWORD", "") or RCON_PASSWORD
+PALWORLD_REST_TIMEOUT_SECONDS = float(os.environ.get("PALWORLD_REST_TIMEOUT_SECONDS", "5"))
 PLAYER_CACHE_TTL_SECONDS = float(os.environ.get("PLAYER_CACHE_TTL_SECONDS", "8"))
-_player_response_cache: tuple[float, str] = (0.0, "")
+_player_response_cache: tuple[float, dict[str, Any]] = (0.0, {})
 _player_response_lock = threading.Lock()
 
 SYSTEMCTL = os.environ.get("SYSTEMCTL", "/usr/bin/systemctl")
@@ -2207,11 +2215,87 @@ def parse_players(rcon_response: str) -> list[dict[str, str]]:
         players.append(
             {
                 "name": parts[0],
-                "player_uid": parts[1],
-                "steam_id": parts[2] if len(parts) > 2 else "",
+                "account_name": "",
+                "player_id": parts[1],
+                "level": "",
+                "ping": "",
             }
         )
     return players
+
+
+def get_rest_players() -> tuple[list[dict[str, str]], str]:
+    if not PALWORLD_REST_ENABLED:
+        raise RuntimeError("disabled")
+    if not PALWORLD_REST_PASSWORD:
+        raise RuntimeError("not_configured")
+
+    path = "/" + PALWORLD_REST_PATH.lstrip("/")
+    url = f"http://{PALWORLD_REST_HOST}:{PALWORLD_REST_PORT}{path}"
+    credentials = f"{PALWORLD_REST_USERNAME}:{PALWORLD_REST_PASSWORD}".encode("utf-8")
+    request_headers = {
+        "Accept": "application/json",
+        "Authorization": "Basic " + base64.b64encode(credentials).decode("ascii"),
+    }
+
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=request_headers), timeout=PALWORLD_REST_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise RuntimeError("auth_failed") from exc
+        raise RuntimeError("request_failed") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError("unreachable") from exc
+
+    raw_players = payload.get("players") if isinstance(payload, dict) else None
+    if not isinstance(raw_players, list):
+        raise RuntimeError("bad_response")
+
+    players: list[dict[str, str]] = []
+    for raw_player in raw_players:
+        if not isinstance(raw_player, dict):
+            continue
+        players.append(
+            {
+                "name": str(raw_player.get("name") or ""),
+                "account_name": str(raw_player.get("accountName") or ""),
+                "player_id": str(raw_player.get("playerId") or raw_player.get("userId") or ""),
+                "level": str(raw_player.get("level") or ""),
+                "ping": str(raw_player.get("ping") or ""),
+            }
+        )
+    return players, "rest"
+
+
+def get_online_players(player_list_enabled: bool) -> dict[str, Any]:
+    global _player_response_cache
+    with _player_response_lock:
+        cached_at, cached_result = _player_response_cache
+        if time.monotonic() - cached_at < PLAYER_CACHE_TTL_SECONDS:
+            return cached_result
+
+        result: dict[str, Any] = {
+            "players": [],
+            "source": "none",
+            "query_ok": False,
+            "error": "disabled",
+            "fallback_used": False,
+        }
+        try:
+            players, source = get_rest_players()
+            result.update({"players": players, "source": source, "query_ok": True, "error": ""})
+        except RuntimeError as rest_error:
+            result["error"] = str(rest_error)
+            if player_list_enabled:
+                response = rcon_command("ShowPlayers")
+                if not response.startswith("[RCON Error]"):
+                    result.update({"players": parse_players(response), "source": "rcon", "query_ok": True, "error": "", "fallback_used": True})
+                else:
+                    result["error"] = "rcon_failed"
+
+        _player_response_cache = (time.monotonic(), result)
+        return result
 
 
 def get_game_version() -> str:
@@ -2223,33 +2307,26 @@ def get_game_version() -> str:
     return ""
 
 
-def cached_players_response() -> str:
-    global _player_response_cache
-    with _player_response_lock:
-        cached_at, cached_response = _player_response_cache
-        if time.monotonic() - cached_at < PLAYER_CACHE_TTL_SECONDS:
-            return cached_response
-        response = rcon_command("ShowPlayers")
-        _player_response_cache = (time.monotonic(), response)
-        return response
-
-
 def get_server_info() -> dict[str, Any]:
     settings = parse_palworld_settings()
     player_list_enabled = settings.get("bShowPlayerList", "False") == "True"
-    players_response = cached_players_response() if player_list_enabled else ""
-    players_query_ok = player_list_enabled and not players_response.startswith("[RCON Error]")
-    players_response_empty = players_query_ok and not players_response.strip()
+    player_result = get_online_players(player_list_enabled)
+    players = player_result["players"]
+    players_query_ok = player_result["query_ok"]
+    players_response_empty = players_query_ok and not players
     return {
         "server_name": unquote_setting(settings.get("ServerName", "")),
         "server_description": unquote_setting(settings.get("ServerDescription", "")),
         "port": settings.get("PublicPort", "8211"),
         "rcon_port": settings.get("RCONPort", str(RCON_PORT)),
         "game_version": get_game_version(),
-        "online_players": parse_players(players_response),
+        "online_players": players,
         "players_query_ok": players_query_ok,
         "player_list_enabled": player_list_enabled,
         "players_response_empty": players_response_empty,
+        "players_source": player_result["source"],
+        "players_error": player_result["error"],
+        "players_fallback_used": player_result["fallback_used"],
         "max_players": settings.get("ServerPlayerMaxNum", "32"),
         "exp_rate": settings.get("ExpRate", "1.0"),
     }
@@ -2414,6 +2491,9 @@ def api_status():
         "players_query_ok": False,
         "player_list_enabled": False,
         "players_response_empty": False,
+        "players_source": "none",
+        "players_error": "not_running",
+        "players_fallback_used": False,
         "max_players": "N/A",
         "exp_rate": "N/A",
     }

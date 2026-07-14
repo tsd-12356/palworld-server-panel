@@ -992,7 +992,9 @@ function renderStatus(data) {
     const playersQueryOk = Boolean(info.players_query_ok);
     const playerListEnabled = Boolean(info.player_list_enabled);
     const playerTotal = players.length;
-    const playerCountAvailable = playersQueryOk && playerListEnabled;
+    const playerSource = info.players_source || "none";
+    const playerSourceLabels = { rest: "REST API", rcon: "RCON 回退", none: "不可用" };
+    const playerCountAvailable = playersQueryOk;
     const maxPlayers = info.max_players || "0";
     const statusBadge = $("#statusBadge");
     const dockerPending = status.backend === "docker" && status.container_running && !status.ready;
@@ -1027,11 +1029,14 @@ function renderStatus(data) {
     const backendText = status.backend === "docker" ? "Docker" : "systemd";
     $("#serverUptime").textContent = status.start_time ? `模式：${backendText} · 启动时间：${status.start_time}` : `模式：${backendText}`;
     $("#playerCountBadge").textContent = playerCountAvailable ? `${playerTotal} 人` : "不可用";
+    $("#playerSourceBadge").textContent = playerSourceLabels[playerSource] || "不可用";
 
     updateActionButtons(status.running, status.container_running);
     renderPlayers(players, {
         queryOk: playersQueryOk,
         playerListEnabled,
+        source: playerSource,
+        error: info.players_error || "",
         responseEmpty: Boolean(info.players_response_empty),
     });
 }
@@ -1207,12 +1212,9 @@ function updateActionButtons(isRunning, containerRunning = false) {
 
 function renderPlayers(players, stateInfo = {}) {
     const list = $("#playerList");
-    if (!stateInfo.playerListEnabled) {
-        list.innerHTML = `<tr><td colspan="3" class="empty">玩家列表已关闭；请在服务器基础设置中开启“显示在线玩家列表”并重启服务器。</td></tr>`;
-        return;
-    }
     if (!stateInfo.queryOk) {
-        list.innerHTML = `<tr><td colspan="3" class="empty">无法通过 RCON 获取玩家列表，请检查 RCON 状态。</td></tr>`;
+        const detail = stateInfo.error === "auth_failed" ? "REST API 认证失败。" : "REST API 与 RCON 均无法获取玩家列表。";
+        list.innerHTML = `<tr><td colspan="3" class="empty">${detail}</td></tr>`;
         return;
     }
     if (!players.length) {
@@ -1221,7 +1223,9 @@ function renderPlayers(players, stateInfo = {}) {
     }
     list.replaceChildren(...players.map((player) => {
         const row = document.createElement("tr");
-        [player.name, player.player_uid, player.steam_id].forEach((value) => {
+        const identity = player.account_name || player.player_id || "-";
+        const details = [player.level ? `等级 ${player.level}` : "", player.ping ? `${player.ping} ms` : ""].filter(Boolean).join(" · ") || "-";
+        [player.name, identity, details].forEach((value) => {
             const cell = document.createElement("td");
             cell.textContent = value || "-";
             row.appendChild(cell);

@@ -174,6 +174,10 @@ values = {
     "AdminPassword": '"' + os.environ["RCON_PASSWORD"].replace('"', '\\"') + '"',
 }
 
+if os.environ.get("PALWORLD_REST_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+    values["RESTAPIEnabled"] = "True"
+    values["RESTAPIPort"] = os.environ.get("PALWORLD_REST_PORT", "8212")
+
 for key, value in values.items():
     if f"{key}=" in text:
         text = re.sub(rf"{re.escape(key)}=([^,\)]+)", f"{key}={value}", text)

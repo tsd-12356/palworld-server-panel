@@ -67,6 +67,29 @@ http://服务器IP:8080
 
 `25575/tcp` 是 RCON 端口，建议只在可信网络内开放。
 
+## 内部 REST 玩家列表
+
+面板可以通过 Palworld REST API 获取准确的在线玩家列表。REST 默认仅在 Docker Compose 内部网络的 `palworld:8212` 上可访问，**不会**发布到宿主机或公网。
+
+在 `.env` 中启用：
+
+```env
+PALWORLD_REST_ENABLED=true
+PALWORLD_REST_PORT=8212
+PALWORLD_REST_PATH=/v1/api/players
+PALWORLD_REST_USERNAME=admin
+# 留空时复用 RCON_PASSWORD
+PALWORLD_REST_PASSWORD=
+```
+
+更改后重启游戏容器使 Palworld 读取新设置：
+
+```bash
+docker compose restart palworld
+```
+
+不要在 `ports:` 中添加 `8212:8212`。REST 使用 HTTP Basic Auth；如确有其他工具需要跨网络访问，请通过 TLS 反向代理和严格防火墙规则保护它。
+
 ## 数据持久化
 
 默认目录：
