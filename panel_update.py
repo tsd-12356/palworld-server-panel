@@ -13,7 +13,6 @@ import os
 import re
 import shutil
 import socket
-import struct
 import subprocess
 import sys
 import time
@@ -21,6 +20,8 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from rcon import rcon_command as send_rcon_command
 
 
 PALWORLD_DIR = Path(os.environ.get("PALWORLD_DIR", "/home/demo/palworld"))
@@ -37,6 +38,7 @@ AUTO_UPDATE_WARN_MINUTES = int(os.environ.get("AUTO_UPDATE_WARN_MINUTES", "10") 
 RCON_HOST = os.environ.get("RCON_HOST", "127.0.0.1")
 RCON_PORT = int(os.environ.get("RCON_PORT", "25575"))
 RCON_PASSWORD = os.environ.get("RCON_PASSWORD", "")
+RCON_TIMEOUT_SECONDS = float(os.environ.get("RCON_TIMEOUT_SECONDS", "10"))
 
 PANEL_DIR = Path(os.environ.get("PANEL_DIR", "/home/demo/palworld-panel"))
 STATUS_PATH = Path(os.environ.get("PANEL_UPDATE_STATUS", str(PANEL_DIR / "update-status.json")))
@@ -236,49 +238,7 @@ def operation_lock():
 
 
 def rcon_command(command: str, timeout: int = 5) -> str:
-    if not RCON_PASSWORD:
-        return "[RCON Error] RCON_PASSWORD is not configured"
-    try:
-        with socket.create_connection((RCON_HOST, RCON_PORT), timeout=timeout) as sock:
-            sock.settimeout(timeout)
-
-            def send_packet(packet_id: int, packet_type: int, body_text: str) -> None:
-                body = body_text.encode("utf-8") + b"\x00\x00"
-                payload = struct.pack("<ii", packet_id, packet_type) + body
-                sock.sendall(struct.pack("<i", len(payload)) + payload)
-
-            def recv_packet() -> tuple[int, int, str]:
-                header = sock.recv(4)
-                if len(header) != 4:
-                    raise RuntimeError("short response header")
-                size = struct.unpack("<i", header)[0]
-                data = b""
-                while len(data) < size:
-                    chunk = sock.recv(size - len(data))
-                    if not chunk:
-                        break
-                    data += chunk
-                packet_id, packet_type = struct.unpack("<ii", data[:8])
-                body = data[8:-2].decode("utf-8", errors="replace")
-                return packet_id, packet_type, body
-
-            send_packet(1, 3, RCON_PASSWORD)
-            packet_id, _, _ = recv_packet()
-            if packet_id == -1:
-                return "[RCON Error] Auth failed"
-            send_packet(2, 2, command)
-            responses: list[str] = []
-            sock.settimeout(1)
-            while True:
-                try:
-                    _, _, body = recv_packet()
-                    if body.strip():
-                        responses.append(body.strip())
-                except socket.timeout:
-                    break
-            return "\n".join(responses)
-    except Exception as exc:
-        return f"[RCON Error] {exc}"
+    return send_rcon_command(RCON_HOST, RCON_PORT, RCON_PASSWORD, command, timeout=timeout)
 
 
 def player_count() -> int:

@@ -15,6 +15,8 @@ services:
       PALWORLD_QUERY_PORT: ${PALWORLD_QUERY_PORT:-27015}
       RCON_PORT: ${RCON_PORT:-25575}
       RCON_PASSWORD: ${RCON_PASSWORD}
+      PALWORLD_REST_ENABLED: ${PALWORLD_REST_ENABLED:-false}
+      PALWORLD_REST_PORT: ${PALWORLD_REST_PORT:-8212}
       SERVER_NAME: ${SERVER_NAME:-Palworld Docker Server}
       SERVER_DESCRIPTION: ${SERVER_DESCRIPTION:-Managed by Palworld Panel}
       SERVER_MAX_PLAYERS: ${SERVER_MAX_PLAYERS:-32}
@@ -30,8 +32,6 @@ services:
       - "${PALWORLD_PORT:-8211}:8211/udp"
       - "${PALWORLD_QUERY_PORT:-27015}:27015/udp"
       - "${RCON_PORT:-25575}:25575/tcp"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./data/palworld:/palworld
       - ./data/steamcmd:/steamcmd
@@ -57,6 +57,12 @@ services:
       RCON_HOST: palworld
       RCON_PORT: ${RCON_PORT:-25575}
       RCON_PASSWORD: ${RCON_PASSWORD}
+      PALWORLD_REST_ENABLED: ${PALWORLD_REST_ENABLED:-false}
+      PALWORLD_REST_HOST: palworld
+      PALWORLD_REST_PORT: ${PALWORLD_REST_PORT:-8212}
+      PALWORLD_REST_PATH: ${PALWORLD_REST_PATH:-/v1/api/players}
+      PALWORLD_REST_USERNAME: ${PALWORLD_REST_USERNAME:-admin}
+      PALWORLD_REST_PASSWORD: ${PALWORLD_REST_PASSWORD:-}
       PANEL_SECRET_KEY: ${PANEL_SECRET_KEY}
       CONFIG_BACKUP_DIR: /app/data/config-backups
       AUDIT_LOG: /app/data/audit.log
@@ -74,6 +80,8 @@ services:
       PALWORLD_MOD_MODE: ${PALWORLD_MOD_MODE:-pak-safe}
     ports:
       - "${PANEL_PORT:-8080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data/panel:/app/data
       - ./data/palworld:/palworld

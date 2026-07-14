@@ -9,15 +9,18 @@ stay free of machine passwords.
 
 from __future__ import annotations
 
+import base64
+import math
 import os
 import json
 import re
 import shutil
 import socket
-import struct
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from contextlib import contextmanager
@@ -25,6 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+
+from rcon import rcon_command as send_rcon_command
 
 
 app = Flask(__name__)
@@ -38,6 +43,8 @@ PALWORLD_CONFIG = Path(
         str(PALWORLD_DIR / "Pal" / "Saved" / "Config" / "LinuxServer" / "PalWorldSettings.ini"),
     )
 )
+DEFAULT_PALWORLD_SETTINGS = Path(os.environ.get("DEFAULT_PALWORLD_SETTINGS", str(PALWORLD_DIR / "DefaultPalWorldSettings.ini")))
+DEPLOYMENT_MANAGED_CONFIG_KEYS = {"PublicPort", "QueryPort", "RCONPort", "RCONEnabled", "AdminPassword"}
 PALWORLD_SERVICE = os.environ.get("PALWORLD_SERVICE", "palworld.service")
 PALWORLD_BACKEND = os.environ.get("PALWORLD_BACKEND", "systemd").strip().lower()
 PALWORLD_CONTAINER_NAME = os.environ.get("PALWORLD_CONTAINER_NAME", "palworld-panel-palworld-1")
@@ -46,6 +53,17 @@ PANEL_USER = os.environ.get("PANEL_USER", "demo")
 RCON_HOST = os.environ.get("RCON_HOST", "127.0.0.1")
 RCON_PORT = int(os.environ.get("RCON_PORT", "25575"))
 RCON_PASSWORD = os.environ.get("RCON_PASSWORD", "")
+RCON_TIMEOUT_SECONDS = float(os.environ.get("RCON_TIMEOUT_SECONDS", "10"))
+PALWORLD_REST_ENABLED = os.environ.get("PALWORLD_REST_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+PALWORLD_REST_HOST = os.environ.get("PALWORLD_REST_HOST", "127.0.0.1")
+PALWORLD_REST_PORT = int(os.environ.get("PALWORLD_REST_PORT", "8212"))
+PALWORLD_REST_PATH = os.environ.get("PALWORLD_REST_PATH", "/v1/api/players")
+PALWORLD_REST_USERNAME = os.environ.get("PALWORLD_REST_USERNAME", "admin")
+PALWORLD_REST_PASSWORD = os.environ.get("PALWORLD_REST_PASSWORD", "") or RCON_PASSWORD
+PALWORLD_REST_TIMEOUT_SECONDS = float(os.environ.get("PALWORLD_REST_TIMEOUT_SECONDS", "5"))
+PLAYER_CACHE_TTL_SECONDS = float(os.environ.get("PLAYER_CACHE_TTL_SECONDS", "8"))
+_player_response_cache: tuple[float, dict[str, Any]] = (0.0, {})
+_player_response_lock = threading.Lock()
 
 SYSTEMCTL = os.environ.get("SYSTEMCTL", "/usr/bin/systemctl")
 JOURNALCTL = os.environ.get("JOURNALCTL", "/usr/bin/journalctl")
@@ -74,6 +92,7 @@ app.config["MAX_CONTENT_LENGTH"] = max(app.config["MAX_CONTENT_LENGTH"], MOD_UPL
 UPDATE_SCRIPT = Path(os.environ.get("PANEL_UPDATE_SCRIPT", "/home/demo/palworld-panel/panel_update.py"))
 UPDATE_STATUS = Path(os.environ.get("PANEL_UPDATE_STATUS", "/home/demo/palworld-panel/update-status.json"))
 UPDATE_LOG = Path(os.environ.get("PANEL_UPDATE_LOG", "/home/demo/palworld-panel/update.log"))
+PALWORLD_UPDATE_REQUEST = Path(os.environ.get("PALWORLD_UPDATE_REQUEST_FILE", str(PALWORLD_DIR / ".panel-update-request")))
 UPDATE_SERVICE = os.environ.get("PANEL_UPDATE_SERVICE", "palworld-panel-update.service")
 UPDATE_TIMER = os.environ.get("PANEL_UPDATE_TIMER", "palworld-panel-update.timer")
 INSTALL_SCRIPT = Path(os.environ.get("PANEL_INSTALL_SCRIPT", "/home/demo/palworld-panel/panel_install.py"))
@@ -84,50 +103,77 @@ INSTALL_SERVICE = os.environ.get("PANEL_INSTALL_SERVICE", "palworld-panel-instal
 VALID_SLOT_ID = re.compile(r"^[a-z0-9_-]{1,64}$")
 VALID_WORLD_ID = re.compile(r"^[A-Fa-f0-9]{32}$")
 CONFIG_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
-STRING_FIELDS = {"ServerName", "ServerDescription", "ServerPassword", "AdminPassword"}
+STRING_FIELDS = {
+    "ServerName",
+    "ServerDescription",
+    "ServerPassword",
+    "AdminPassword",
+    "RandomizerSeed",
+    "DenyTechnologyList",
+}
+UNQUOTED_STRING_FIELDS: set[str] = set()
 SAVE_UPLOAD_MAX_EXTRACTED_BYTES = int(os.environ.get("SAVE_UPLOAD_MAX_EXTRACTED_BYTES", str(2 * 1024 * 1024 * 1024)))
 
 NUMERIC_RANGES = {
     "ServerPlayerMaxNum": (1, 128),
     "GuildPlayerMaxNum": (1, 100),
+    "CoopPlayerMaxNum": (1, 32),
     "AutoSaveSpan": (1, 3600),
     "ChatPostLimitPerMinute": (0, 1000),
     "BaseCampMaxNum": (1, 512),
     "BaseCampWorkerMaxNum": (1, 100),
     "BaseCampMaxNumInGuild": (1, 512),
     "ExpRate": (0.1, 20),
-    "PalCaptureRate": (0.5, 2),
-    "PalSpawnNumRate": (0.5, 3),
+    "PalCaptureRate": (0.1, 5),
+    "PalSpawnNumRate": (0.1, 5),
     "DayTimeSpeedRate": (0.1, 5),
     "NightTimeSpeedRate": (0.1, 5),
-    "WorkSpeedRate": (0.5, 5),
-    "CollectionDropRate": (0.5, 3),
-    "EnemyDropItemRate": (0.5, 3),
-    "ItemWeightRate": (0.1, 5),
-    "PalDamageRateAttack": (0.1, 5),
-    "PalDamageRateDefense": (0.1, 5),
-    "PlayerDamageRateAttack": (0.1, 5),
-    "PlayerDamageRateDefense": (0.1, 5),
-    "PlayerStomachDecreaceRate": (0.1, 5),
-    "PlayerStaminaDecreaceRate": (0.1, 5),
-    "PlayerAutoHPRegeneRate": (0.1, 5),
-    "PlayerAutoHpRegeneRateInSleep": (0.1, 5),
-    "PalStomachDecreaceRate": (0.1, 5),
-    "PalStaminaDecreaceRate": (0.1, 5),
-    "PalAutoHPRegeneRate": (0.1, 5),
-    "PalAutoHpRegeneRateInSleep": (0.1, 5),
+    "WorkSpeedRate": (0.1, 10),
+    "CollectionDropRate": (0.1, 10),
+    "EnemyDropItemRate": (0.1, 10),
+    "ItemWeightRate": (0.1, 10),
+    "PalDamageRateAttack": (0.1, 10),
+    "PalDamageRateDefense": (0.1, 10),
+    "PlayerDamageRateAttack": (0.1, 10),
+    "PlayerDamageRateDefense": (0.1, 10),
+    "PlayerStomachDecreaceRate": (0.1, 10),
+    "PlayerStaminaDecreaceRate": (0.1, 10),
+    "PlayerAutoHPRegeneRate": (0.1, 10),
+    "PlayerAutoHpRegeneRateInSleep": (0.1, 10),
+    "PalStomachDecreaceRate": (0.1, 10),
+    "PalStaminaDecreaceRate": (0.1, 10),
+    "PalAutoHPRegeneRate": (0.1, 10),
+    "PalAutoHpRegeneRateInSleep": (0.1, 10),
     "BuildObjectHpRate": (0.1, 10),
     "BuildObjectDamageRate": (0.1, 10),
     "BuildObjectDeteriorationDamageRate": (0, 10),
-    "CollectionObjectHpRate": (0.5, 3),
-    "CollectionObjectRespawnSpeedRate": (0.5, 3),
+    "CollectionObjectHpRate": (0.1, 10),
+    "CollectionObjectRespawnSpeedRate": (0.1, 10),
     "DropItemMaxNum": (0, 10000),
-    "DropItemAliveMaxHours": (0.5, 24),
+    "PhysicsActiveDropItemMaxNum": (-1, 10000),
+    "DropItemMaxNum_UNKO": (0, 10000),
+    "DropItemAliveMaxHours": (0.1, 240),
     "PalEggDefaultHatchingTime": (0, 240),
-    "EquipmentDurabilityDamageRate": (0, 5),
+    "EquipmentDurabilityDamageRate": (0, 10),
     "SupplyDropSpan": (1, 1440),
     "AutoResetGuildTimeNoOnlinePlayers": (0, 720),
-    "RCONPort": (1024, 65535),
+    "MaxBuildingLimitNum": (0, 100000),
+    "ServerReplicatePawnCullDistance": (1000, 100000),
+    "ItemContainerForceMarkDirtyInterval": (0.1, 60),
+    "PlayerDataPalStorageUpdateCheckTickInterval": (0.1, 60),
+    "ItemCorruptionMultiplier": (0, 10),
+    "MonsterFarmActionSpeedRate": (0.1, 10),
+    "GuildRejoinCooldownMinutes": (0, 10080),
+    "AutoTransferMasterCheckIntervalSeconds": (60, 604800),
+    "AutoTransferMasterThresholdDays": (0, 365),
+    "MaxGuildsPerFrame": (1, 1000),
+    "BlockRespawnTime": (0, 3600),
+    "RespawnPenaltyDurationThreshold": (0, 3600),
+    "RespawnPenaltyTimeScale": (0, 10),
+    "AdditionalDropItemNumWhenPlayerKillingInPvPMode": (0, 100),
+    "VoiceChatMaxVolumeDistance": (0, 100000),
+    "VoiceChatZeroVolumeDistance": (0, 100000),
+    "BuildingNameDisplayCacheTTLSeconds": (0, 3600),
     "RESTAPIPort": (1024, 65535),
 }
 
@@ -138,6 +184,7 @@ FIELD_LABELS = {
     "AdminPassword": "管理员密码",
     "ServerPlayerMaxNum": "最大玩家数",
     "GuildPlayerMaxNum": "公会最大人数",
+    "CoopPlayerMaxNum": "合作玩家人数",
     "AutoSaveSpan": "自动存档间隔",
     "ChatPostLimitPerMinute": "聊天限速",
     "BaseCampMaxNum": "据点最大数量",
@@ -146,42 +193,64 @@ FIELD_LABELS = {
     "ExpRate": "经验倍率",
     "PalCaptureRate": "帕鲁捕获率",
     "PalSpawnNumRate": "帕鲁刷新率",
-    "DayTimeSpeedRate": "白天速度",
-    "NightTimeSpeedRate": "夜晚速度",
-    "WorkSpeedRate": "工作速度",
-    "CollectionDropRate": "采集掉落率",
-    "EnemyDropItemRate": "敌人掉落率",
-    "ItemWeightRate": "物品重量倍率",
-    "PalDamageRateAttack": "帕鲁攻击力倍率",
-    "PalDamageRateDefense": "帕鲁受伤倍率",
-    "PlayerDamageRateAttack": "玩家攻击力倍率",
-    "PlayerDamageRateDefense": "玩家受伤倍率",
+    "ItemCorruptionMultiplier": "物品腐化倍率",
+    "MonsterFarmActionSpeedRate": "牧场动作速度倍率",
     "DropItemMaxNum": "掉落物最大数量",
-    "RCONPort": "RCON 端口",
+    "PhysicsActiveDropItemMaxNum": "物理掉落物上限",
+    "MaxBuildingLimitNum": "建筑总数上限",
+    "ServerReplicatePawnCullDistance": "网络复制距离",
+    "DenyTechnologyList": "禁用科技列表",
     "RESTAPIPort": "REST API 端口",
 }
 
 BOOL_FIELDS = {
+    "bIsRandomizerPalLevelRandom",
     "bEnablePlayerToPlayerDamage",
     "bEnableFriendlyFire",
     "bIsPvP",
     "bEnableInvaderEnemy",
+    "bActiveUNKO",
+    "bEnableAimAssistPad",
+    "bEnableAimAssistKeyboard",
+    "bAutoResetGuildNoOnlinePlayers",
+    "bIsMultiplay",
+    "bHardcore",
+    "bPalLost",
+    "bCharacterRecreateInHardcore",
+    "bCanPickupOtherGuildDeathPenaltyDrop",
+    "bEnableNonLoginPenalty",
     "bEnableFastTravel",
     "bEnableFastTravelOnlyBaseCamp",
     "bIsStartLocationSelectByMap",
+    "bExistPlayerAfterLogout",
+    "bEnableDefenseOtherGuildPlayer",
+    "bInvisibleOtherGuildBaseCampAreaFX",
+    "bBuildAreaLimit",
     "bAllowClientMod",
     "bIsShowJoinLeftMessage",
     "bShowPlayerList",
     "bIsUseBackupSaveData",
     "EnablePredatorBossPal",
-    "bHardcore",
-    "bPalLost",
-    "RCONEnabled",
+    "bAllowGlobalPalboxExport",
+    "bAllowGlobalPalboxImport",
+    "bDisplayPvPItemNumOnWorldMap_BaseCamp",
+    "bDisplayPvPItemNumOnWorldMap_Player",
+    "bAdditionalDropItemWhenPlayerKillingInPvPMode",
+    "bEnableVoiceChat",
+    "bAllowEnhanceStat_Health",
+    "bAllowEnhanceStat_Attack",
+    "bAllowEnhanceStat_Stamina",
+    "bAllowEnhanceStat_Weight",
+    "bAllowEnhanceStat_WorkSpeed",
+    "bEnableBuildingPlayerUIdDisplay",
     "RESTAPIEnabled",
 }
 
 CHOICE_FIELDS = {
+    "Difficulty": {"None", "Casual", "Normal", "Hard", "Hardcore"},
+    "RandomizerType": {"None", "Pal", "MapObject", "All"},
     "DeathPenalty": {"None", "Item", "ItemAndEquipment", "All"},
+    "AdditionalDropItemWhenPlayerKillingInPvPMode": {"None", "PlayerDropItem", "All"},
 }
 
 ALLOWED_CONFIG_KEYS = STRING_FIELDS | set(NUMERIC_RANGES) | BOOL_FIELDS | set(CHOICE_FIELDS)
@@ -420,9 +489,26 @@ def normalize_config_value(key: str, value: Any) -> str:
 
 
 def serialize_config_value(key: str, value: Any) -> str:
+    if key in UNQUOTED_STRING_FIELDS:
+        return str(value if value is not None else "").strip()
     if key in STRING_FIELDS:
         return encode_setting_string(value)
     return str(value if value is not None else "").strip()
+
+
+def parse_default_palworld_settings() -> dict[str, str]:
+    try:
+        return parse_palworld_settings(DEFAULT_PALWORLD_SETTINGS.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {}
+
+
+def get_panel_settings() -> dict[str, str]:
+    settings = parse_default_palworld_settings()
+    settings.update(parse_palworld_settings())
+    for key in DEPLOYMENT_MANAGED_CONFIG_KEYS:
+        settings.pop(key, None)
+    return settings
 
 
 def build_palworld_settings(options: dict[str, str]) -> str:
@@ -438,6 +524,9 @@ def validate_config_changes(changes: dict[str, Any]) -> list[str]:
 
         if not key or not CONFIG_KEY_RE.match(key):
             errors.append(f"{label} 名称不合法")
+            continue
+        if key in DEPLOYMENT_MANAGED_CONFIG_KEYS:
+            errors.append(f"{label} 由部署配置管理，不能在面板中修改")
             continue
         if key not in ALLOWED_CONFIG_KEYS:
             errors.append(f"不支持修改配置项：{key}")
@@ -457,6 +546,10 @@ def validate_config_changes(changes: dict[str, Any]) -> list[str]:
                 number = float(text)
             except ValueError:
                 errors.append(f"{label} 必须是数字")
+                continue
+
+            if not math.isfinite(number):
+                errors.append(f"{label} 必须是有限数字")
                 continue
 
             minimum, maximum = NUMERIC_RANGES[key]
@@ -486,7 +579,7 @@ def update_palworld_settings(changes: dict[str, Any]) -> dict[str, str]:
     if errors:
         raise ValueError("; ".join(errors[:5]))
 
-    current = parse_palworld_settings()
+    current = get_panel_settings()
     for raw_key, value in changes.items():
         key = str(raw_key or "").strip()
         if key and value is not None:
@@ -574,8 +667,22 @@ def parse_steam_manifest(manifest_path: Path | None = None) -> dict[str, str]:
 
 
 def fetch_latest_manifest() -> str:
-    with urllib.request.urlopen("https://api.steamcmd.net/v1/info/2394010", timeout=30) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    url = "https://api.steamcmd.net/v1/info/2394010"
+
+    def fetch(opener: urllib.request.OpenerDirector) -> dict[str, Any]:
+        with opener.open(url, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    proxies = urllib.request.getproxies()
+    has_proxy = any(name in proxies for name in ("http", "https", "all"))
+    if has_proxy:
+        try:
+            data = fetch(urllib.request.build_opener())
+        except urllib.error.URLError:
+            data = fetch(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+    else:
+        data = fetch(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+
     app_data = data["data"]["2394010"]
     return str(app_data["depots"]["2394012"]["manifests"]["public"]["gid"])
 
@@ -660,63 +767,122 @@ def run_update_check_now() -> tuple[bool, str]:
 def start_update_service() -> tuple[bool, str]:
     if using_docker_backend():
         update_status = read_update_status()
+        if update_status.get("running"):
+            return False, "更新任务正在运行"
         if not update_status.get("update_available"):
             return False, "当前没有检测到可用更新，请先点击检查更新"
-        try:
-            write_json(
-                UPDATE_STATUS,
-                {
-                    **update_status,
-                    "backend": "docker",
-                    "running": True,
-                    "phase": "running",
-                    "started_at": iso_now(),
-                    "success": None,
-                    "message": "Restarting Palworld container for SteamCMD validate",
-                    "steps": [
-                        {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
-                        {"name": "update", "status": "active", "message": "Container entrypoint will run SteamCMD validate", "time": iso_now()},
-                    ],
-                },
-            )
-            container = get_docker_container()
-            container.restart(timeout=120)
-            time.sleep(3)
-            refreshed = read_update_status()
-            write_json(
-                UPDATE_STATUS,
-                {
-                    **refreshed,
-                    "backend": "docker",
-                    "running": False,
-                    "phase": "complete",
-                    "finished_at": iso_now(),
-                    "success": True,
-                    "message": "Palworld container restarted; SteamCMD validate runs in container entrypoint",
-                    "steps": [
-                        {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
-                        {"name": "update", "status": "done", "message": "Container restarted", "time": iso_now()},
-                        {"name": "start", "status": "done", "message": "Container running", "time": iso_now()},
-                        {"name": "complete", "status": "done", "message": "Docker update trigger complete", "time": iso_now()},
-                    ],
-                },
-            )
-            return True, "Palworld 容器已重启，entrypoint 会自动校验/更新服务端文件"
-        except Exception as exc:
-            status = read_update_status()
-            write_json(
-                UPDATE_STATUS,
-                {
-                    **status,
-                    "backend": "docker",
-                    "running": False,
-                    "phase": "failed",
-                    "finished_at": iso_now(),
-                    "success": False,
-                    "message": str(exc),
-                },
-            )
-            return False, str(exc)
+
+        expected_manifest = str(update_status.get("latest_manifest") or "")
+        if not expected_manifest:
+            return False, "未获取到目标 Manifest，请先重新检查更新"
+
+        write_json(
+            UPDATE_STATUS,
+            {
+                **update_status,
+                "backend": "docker",
+                "running": True,
+                "phase": "running",
+                "started_at": iso_now(),
+                "success": None,
+                "message": "Requesting a Palworld update and waiting for the target Steam manifest",
+                "steps": [
+                    {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
+                    {"name": "update", "status": "active", "message": "Requesting SteamCMD to install the target manifest", "time": iso_now()},
+                ],
+            },
+        )
+
+        def run_update() -> None:
+            try:
+                started_at = int(time.time())
+                container = get_docker_container()
+                PALWORLD_UPDATE_REQUEST.parent.mkdir(parents=True, exist_ok=True)
+                PALWORLD_UPDATE_REQUEST.write_text("update\n", encoding="utf-8")
+                container.restart(timeout=120)
+                deadline = time.monotonic() + 900
+
+                while True:
+                    local = parse_steam_manifest()
+                    game_state = get_docker_game_state()
+                    if local.get("manifest") == expected_manifest and game_state.get("ready"):
+                        write_json(
+                            UPDATE_STATUS,
+                            {
+                                **read_update_status(),
+                                "backend": "docker",
+                                "running": False,
+                                "phase": "complete",
+                                "finished_at": iso_now(),
+                                "success": True,
+                                "message": "SteamCMD update complete; target manifest verified and Palworld is ready",
+                                "local_buildid": local.get("buildid", ""),
+                                "local_manifest": local.get("manifest", ""),
+                                "update_available": False,
+                                "steps": [
+                                    {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
+                                    {"name": "update", "status": "done", "message": f"Manifest {expected_manifest} installed", "time": iso_now()},
+                                    {"name": "start", "status": "done", "message": "Palworld server ready", "time": iso_now()},
+                                    {"name": "complete", "status": "done", "message": "Target manifest verified", "time": iso_now()},
+                                ],
+                            },
+                        )
+                        return
+
+                    raw_logs = container.logs(since=started_at, tail=160, stdout=True, stderr=True)
+                    log_text = raw_logs.decode("utf-8", errors="replace") if isinstance(raw_logs, bytes) else str(raw_logs)
+                    if "SteamCMD failed" in log_text or "Error! App '2394010' state is" in log_text:
+                        raise RuntimeError(
+                            f"SteamCMD update failed; manifest is still {local.get('manifest') or 'unknown'} (expected {expected_manifest})"
+                        )
+
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Timed out waiting for SteamCMD to install manifest {expected_manifest}; current manifest is {local.get('manifest') or 'unknown'}"
+                        )
+
+                    write_json(
+                        UPDATE_STATUS,
+                        {
+                            **read_update_status(),
+                            "backend": "docker",
+                            "running": True,
+                            "phase": "running",
+                            "success": None,
+                            "message": f"Waiting for SteamCMD update (current manifest: {local.get('manifest') or '-'})",
+                            "local_buildid": local.get("buildid", ""),
+                            "local_manifest": local.get("manifest", ""),
+                            "steps": [
+                                {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
+                                {"name": "update", "status": "active", "message": "SteamCMD update in progress", "time": iso_now()},
+                                {"name": "start", "status": "pending", "message": game_state.get("message", "Waiting for Palworld"), "time": iso_now()},
+                            ],
+                        },
+                    )
+                    time.sleep(10)
+            except Exception as exc:
+                status = read_update_status()
+                write_json(
+                    UPDATE_STATUS,
+                    {
+                        **status,
+                        "backend": "docker",
+                        "running": False,
+                        "phase": "failed",
+                        "finished_at": iso_now(),
+                        "success": False,
+                        "message": str(exc),
+                        "log_tail": docker_container_logs(120),
+                        "steps": [
+                            {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
+                            {"name": "update", "status": "error", "message": str(exc), "time": iso_now()},
+                            {"name": "complete", "status": "error", "message": "Target manifest was not verified", "time": iso_now()},
+                        ],
+                    },
+                )
+
+        threading.Thread(target=run_update, name="palworld-update", daemon=True).start()
+        return True, "更新任务已在后台启动；面板会在目标 Manifest 验证后才显示完成"
 
     active, _, _ = systemctl("is-active", UPDATE_SERVICE, timeout=10)
     if active.strip() == "active":
@@ -1972,55 +2138,8 @@ def unquote_setting(value: str, fallback: str = "") -> str:
 
 
 def rcon_command(command: str) -> str:
-    """Send an RCON command via the Source RCON protocol."""
-    if not RCON_PASSWORD:
-        return "[RCON Error] RCON_PASSWORD is not configured"
-
-    try:
-        with socket.create_connection((RCON_HOST, RCON_PORT), timeout=5) as sock:
-            sock.settimeout(5)
-
-            def send_packet(packet_id: int, packet_type: int, body_text: str) -> None:
-                body = body_text.encode("utf-8") + b"\x00\x00"
-                payload = struct.pack("<ii", packet_id, packet_type) + body
-                sock.sendall(struct.pack("<i", len(payload)) + payload)
-
-            def recv_packet() -> tuple[int, int, str]:
-                header = sock.recv(4)
-                if len(header) != 4:
-                    raise RuntimeError("short response header")
-                size = struct.unpack("<i", header)[0]
-                data = b""
-                while len(data) < size:
-                    chunk = sock.recv(size - len(data))
-                    if not chunk:
-                        break
-                    data += chunk
-                if len(data) < 10:
-                    raise RuntimeError("short response body")
-                packet_id, packet_type = struct.unpack("<ii", data[:8])
-                body = data[8:-2].decode("utf-8", errors="replace")
-                return packet_id, packet_type, body
-
-            send_packet(1, 3, RCON_PASSWORD)
-            packet_id, _, _ = recv_packet()
-            if packet_id == -1:
-                return "[RCON Error] Auth failed"
-
-            send_packet(2, 2, command)
-            responses: list[str] = []
-            sock.settimeout(1)
-            while True:
-                try:
-                    _, _, body = recv_packet()
-                    if body.strip():
-                        responses.append(body.strip())
-                except socket.timeout:
-                    break
-
-        return "\n".join(responses)
-    except Exception as exc:
-        return f"[RCON Error] {exc}"
+    """Send an RCON command to the configured Palworld server."""
+    return send_rcon_command(RCON_HOST, RCON_PORT, RCON_PASSWORD, command, timeout=RCON_TIMEOUT_SECONDS)
 
 
 def get_server_status() -> dict[str, Any]:
@@ -2085,18 +2204,98 @@ def parse_players(rcon_response: str) -> list[dict[str, str]]:
     if not rcon_response or rcon_response.startswith("[RCON Error]"):
         return players
 
-    for line in rcon_response.strip().splitlines()[1:]:
-        if not line.strip():
-            continue
+    lines = [line.strip() for line in rcon_response.splitlines() if line.strip()]
+    if lines and lines[0].lower().startswith("name,"):
+        lines = lines[1:]
+
+    for line in lines:
         parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
         players.append(
             {
-                "name": parts[0] if len(parts) > 0 else "",
-                "player_uid": parts[1] if len(parts) > 1 else "",
-                "steam_id": parts[2] if len(parts) > 2 else "",
+                "name": parts[0],
+                "account_name": "",
+                "player_id": parts[1],
+                "level": "",
+                "ping": "",
             }
         )
     return players
+
+
+def get_rest_players() -> tuple[list[dict[str, str]], str]:
+    if not PALWORLD_REST_ENABLED:
+        raise RuntimeError("disabled")
+    if not PALWORLD_REST_PASSWORD:
+        raise RuntimeError("not_configured")
+
+    path = "/" + PALWORLD_REST_PATH.lstrip("/")
+    url = f"http://{PALWORLD_REST_HOST}:{PALWORLD_REST_PORT}{path}"
+    credentials = f"{PALWORLD_REST_USERNAME}:{PALWORLD_REST_PASSWORD}".encode("utf-8")
+    request_headers = {
+        "Accept": "application/json",
+        "Authorization": "Basic " + base64.b64encode(credentials).decode("ascii"),
+    }
+
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=request_headers), timeout=PALWORLD_REST_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise RuntimeError("auth_failed") from exc
+        raise RuntimeError("request_failed") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError("unreachable") from exc
+
+    raw_players = payload.get("players") if isinstance(payload, dict) else None
+    if not isinstance(raw_players, list):
+        raise RuntimeError("bad_response")
+
+    players: list[dict[str, str]] = []
+    for raw_player in raw_players:
+        if not isinstance(raw_player, dict):
+            continue
+        players.append(
+            {
+                "name": str(raw_player.get("name") or ""),
+                "account_name": str(raw_player.get("accountName") or ""),
+                "player_id": str(raw_player.get("playerId") or raw_player.get("userId") or ""),
+                "level": str(raw_player.get("level") or ""),
+                "ping": str(raw_player.get("ping") or ""),
+            }
+        )
+    return players, "rest"
+
+
+def get_online_players(player_list_enabled: bool) -> dict[str, Any]:
+    global _player_response_cache
+    with _player_response_lock:
+        cached_at, cached_result = _player_response_cache
+        if time.monotonic() - cached_at < PLAYER_CACHE_TTL_SECONDS:
+            return cached_result
+
+        result: dict[str, Any] = {
+            "players": [],
+            "source": "none",
+            "query_ok": False,
+            "error": "disabled",
+            "fallback_used": False,
+        }
+        try:
+            players, source = get_rest_players()
+            result.update({"players": players, "source": source, "query_ok": True, "error": ""})
+        except RuntimeError as rest_error:
+            result["error"] = str(rest_error)
+            if player_list_enabled:
+                response = rcon_command("ShowPlayers")
+                if not response.startswith("[RCON Error]"):
+                    result.update({"players": parse_players(response), "source": "rcon", "query_ok": True, "error": "", "fallback_used": True})
+                else:
+                    result["error"] = "rcon_failed"
+
+        _player_response_cache = (time.monotonic(), result)
+        return result
 
 
 def get_game_version() -> str:
@@ -2110,13 +2309,24 @@ def get_game_version() -> str:
 
 def get_server_info() -> dict[str, Any]:
     settings = parse_palworld_settings()
+    player_list_enabled = settings.get("bShowPlayerList", "False") == "True"
+    player_result = get_online_players(player_list_enabled)
+    players = player_result["players"]
+    players_query_ok = player_result["query_ok"]
+    players_response_empty = players_query_ok and not players
     return {
         "server_name": unquote_setting(settings.get("ServerName", "")),
         "server_description": unquote_setting(settings.get("ServerDescription", "")),
         "port": settings.get("PublicPort", "8211"),
         "rcon_port": settings.get("RCONPort", str(RCON_PORT)),
         "game_version": get_game_version(),
-        "online_players": parse_players(rcon_command("ShowPlayers")),
+        "online_players": players,
+        "players_query_ok": players_query_ok,
+        "player_list_enabled": player_list_enabled,
+        "players_response_empty": players_response_empty,
+        "players_source": player_result["source"],
+        "players_error": player_result["error"],
+        "players_fallback_used": player_result["fallback_used"],
         "max_players": settings.get("ServerPlayerMaxNum", "32"),
         "exp_rate": settings.get("ExpRate", "1.0"),
     }
@@ -2278,6 +2488,12 @@ def api_status():
         "rcon_port": "N/A",
         "game_version": "N/A",
         "online_players": [],
+        "players_query_ok": False,
+        "player_list_enabled": False,
+        "players_response_empty": False,
+        "players_source": "none",
+        "players_error": "not_running",
+        "players_fallback_used": False,
         "max_players": "N/A",
         "exp_rate": "N/A",
     }
@@ -2697,7 +2913,7 @@ def api_mods_apply_restart():
 
 @app.route("/api/config", methods=["GET"])
 def api_get_config():
-    return jsonify({"settings": parse_palworld_settings()})
+    return jsonify({"settings": get_panel_settings()})
 
 
 @app.route("/api/config", methods=["POST"])
