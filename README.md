@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docker Compose](https://img.shields.io/badge/deploy-Docker%20Compose-2496ED.svg)](docs/DOCKER.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](requirements.txt)
-[![Release](https://img.shields.io/badge/release-v2.0.0-blue.svg)](docs/releases/v2.0.0.md)
+[![Release](https://img.shields.io/badge/release-v3.0.0-blue.svg)](docs/releases/v3.0.0.md)
 
 一个面向 Palworld Dedicated Server 的现代 Web 管理面板。主打 **自动化、省心运维、浅色毛玻璃 UI**：支持 Docker Compose 一键部署、服务器安装向导、存档管理、配置编辑、RCON、日志、机器状态、手动更新、操作审计和实验性 MOD 管理，适合个人服务器、朋友服和内网运维。
 
@@ -16,7 +16,9 @@
 - **安装省心**：内置安装向导，可检查环境、安装/修复 Palworld、SteamCMD、systemd 服务和权限。
 - **更新省心**：支持手动检测版本、后台触发更新，更新日志和状态直接在面板里看。
 - **存档省心**：支持备份、上传 zip 导入、创建新世界、切换存档、删除存档。
-- **MOD 实验增强**：2.0 起支持上传 `.pak/.sig/.zip`、启用/禁用、移入废纸篓、清理废纸篓和应用重启；会拒绝空文件、脚本和高风险压缩包内容。
+- **在线状态更可靠**：3.0 优先通过 Palworld REST API 获取在线玩家；RCON 仅作为兼容回退，避免新版本服务端 `ShowPlayers` 空响应造成的错误人数显示。
+- **RCON 更稳定**：改进多包/连接结束响应处理，并保护由部署管理的管理员/RCON 配置，避免面板配置保存后认证凭据漂移。
+- **MOD 实验增强**：2.0 起支持上传 `.pak/.sig/.zip`、启用/禁用、移入废纸篓、清理废纸篓和应用重启；MOD 兼容性仍取决于游戏版本、服务端系统和 MOD 作者实现。
 - **配置省心**：可视化编辑 `PalWorldSettings.ini`，保存前显示差异确认，保存并重启有步骤反馈。
 - **面板好看**：浅色玻璃拟态、星尘粒子、鼠标光斑、卡片动效，比传统黑框面板更舒服。
 - **功能够完整**：状态、在线玩家、日志、配置、RCON、存档、更新、审计、机器监控都在一个页面里。
@@ -41,6 +43,8 @@
 - **环境检查自动化**：安装向导会检查 apt、systemd、Python、curl、tar、SteamCMD、Palworld、环境变量和服务状态。
 - **配置操作自动化**：保存配置前显示字段差异，保存并重启会展示“保存配置 -> 重启服务 -> 等待恢复 -> 刷新状态”。
 - **存档操作自动化**：切换存档会自动停止服务、备份当前存档、替换存档、修复权限、启动服务。
+- **玩家状态自动化**：3.0 优先通过内部 REST API 获取结构化在线玩家数据，REST 不可用时才回退 RCON；查询结果会短暂缓存，避免频繁轮询游戏服务端。
+- **RCON 操作自动化**：控制台使用更稳健的响应读取方式；部署管理的管理员/RCON 字段不会再被通用配置保存流程误改。
 - **MOD 操作半自动化**：上传后自动识别 PAK 或官方 `Info.json` 包，启用/禁用后可一键备份并重启；MOD 兼容性仍取决于游戏版本、服务端系统和 MOD 作者实现。
 - **更新流程自动化**：手动检测 manifest，确认后后台执行更新流程，日志和结果保留在面板里。
 - **运维审计自动化**：启动、停止、重启、配置保存、RCON、存档操作都会进入操作记录。
@@ -49,11 +53,11 @@
 
 | 分类 | 功能 |
 | --- | --- |
-| 服务器控制 | 启动、停止、重启、运行状态、在线玩家 |
-| 配置管理 | 可视化修改 `PalWorldSettings.ini`、差异确认、保存并重启 |
+| 服务器控制 | 启动、停止、重启、运行状态、REST 优先的在线玩家显示 |
+| 配置管理 | 可视化修改 `PalWorldSettings.ini`、差异确认、保存并重启；管理员/RCON 字段由部署配置保护 |
 | 存档管理 | 备份、上传 zip 导入、创建新档、切换、删除 |
 | MOD 管理 | 实验性：上传 `.pak/.sig/.zip`、启用、禁用、移入废纸篓、清理废纸篓、应用并重启；拒绝空文件、脚本和危险 zip 内容 |
-| 日志与 RCON | 实时日志、RCON 控制台、命令结果分层展示 |
+| 日志与 RCON | 实时日志、RCON 控制台、兼容新版本 Palworld 的响应处理 |
 | 机器状态 | CPU、内存、磁盘、负载、运行时间、迷你趋势图 |
 | 更新管理 | 手动检测更新、手动触发后台更新 |
 | 安装向导 | 环境检查、Palworld 安装、SteamCMD 检查、权限/服务修复 |
@@ -75,6 +79,10 @@ cp .env.example .env
 ```env
 RCON_PASSWORD=change-this-password
 PANEL_SECRET_KEY=change-this-secret
+
+# v3.0：使用仅 Docker 内部访问的 REST API 获取准确在线玩家。
+# 启用后需要重启一次 palworld 容器。
+PALWORLD_REST_ENABLED=true
 ```
 
 启动：
@@ -178,13 +186,16 @@ journalctl -u palworld.service -f
 - [常见问题](docs/FAQ.md)
 - [安全说明](docs/SECURITY.md)
 - [Roadmap](ROADMAP.md)
+- [v3.0.0 发布说明](docs/releases/v3.0.0.md)
 - [v2.0.0 发布说明](docs/releases/v2.0.0.md)
 - [v0.1.0-beta 发布说明](docs/releases/v0.1.0-beta.md)
 
 ## 版本状态
 
 - systemd 模式已在真实服务器验证。
-- Docker Compose 是推荐部署方式，当前版本为 beta，建议首次部署时先观察 `palworld` 容器日志，确认服务端下载和启动完成。
+- 3.0 默认支持 REST 优先的在线玩家显示；Docker REST 端口仅供 Compose 内部网络访问，默认不映射到宿主机。
+- Docker Compose 是推荐部署方式，当前版本为 v3.0.0。首次部署或升级后请观察 `palworld` 容器日志，确认服务端下载、REST API（如已启用）和游戏启动完成。
+- RCON 控制台保留为兼容管理通道；管理员密码、RCON 端口和开关由部署配置管理，不能通过通用配置表单修改。
 - MOD 管理是 2.0 实验性功能，已覆盖 `.pak` 上传、启用、禁用、删除、清理废纸篓和官方 `Info.json` zip 导入流程；不同 MOD 是否能在 Linux/Docker 服务端正常工作，需要按 MOD 作者说明自行验证。
 - 面板默认不包含登录系统，适合自用、内网、Tailscale、ZeroTier 或可信反代环境。
 - 欢迎通过 Issue 反馈 Docker 部署、systemd 安装、存档管理、配置编辑或 UI 体验问题。
