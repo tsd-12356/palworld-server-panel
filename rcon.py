@@ -10,15 +10,19 @@ AUTH_PACKET_TYPE = 3
 COMMAND_PACKET_TYPE = 2
 AUTH_REQUEST_ID = 1
 COMMAND_REQUEST_ID = 2
-SENTINEL_REQUEST_ID = 3
 MAX_PACKET_SIZE = 4 * 1024 * 1024
 
 
-def rcon_command(host: str, port: int, password: str, command: str, timeout: float = 10) -> str:
-    """Run a Source RCON command and wait for its sentinel response.
+class RconConnectionClosed(RuntimeError):
+    """Raised when the server closes a completed RCON response."""
 
-    A distinct empty command marks the end of a response. This avoids treating a
-    short idle period as completion when a server splits or delays its output.
+
+def rcon_command(host: str, port: int, password: str, command: str, timeout: float = 10) -> str:
+    """Run a Source RCON command and collect its response until it becomes idle.
+
+    Palworld's RCON server accepts Source RCON packets but does not acknowledge
+    an empty completion sentinel. A shared overall deadline and short idle grace
+    period therefore preserve multi-packet responses without waiting forever.
     """
     if not password:
         return "[RCON Error] RCON_PASSWORD is not configured"
@@ -36,10 +40,9 @@ def rcon_command(host: str, port: int, password: str, command: str, timeout: flo
             def recv_exact(length: int) -> bytes:
                 data = bytearray()
                 while len(data) < length:
-                    set_remaining_timeout()
                     chunk = sock.recv(length - len(data))
                     if not chunk:
-                        raise RuntimeError("connection closed while reading response")
+                        raise RconConnectionClosed("connection closed while reading response")
                     data.extend(chunk)
                 return bytes(data)
 
@@ -66,14 +69,27 @@ def rcon_command(host: str, port: int, password: str, command: str, timeout: flo
                 raise RuntimeError("unexpected authentication response")
 
             send_packet(COMMAND_REQUEST_ID, COMMAND_PACKET_TYPE, command)
-            send_packet(SENTINEL_REQUEST_ID, COMMAND_PACKET_TYPE, "")
 
             responses: list[str] = []
+            first_response = True
             while True:
-                packet_id, _, body = recv_packet()
-                if packet_id == SENTINEL_REQUEST_ID:
+                try:
+                    if first_response:
+                        set_remaining_timeout()
+                    else:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            return "\n".join(responses)
+                        sock.settimeout(min(1.5, remaining))
+                    packet_id, _, body = recv_packet()
+                except socket.timeout:
                     return "\n".join(responses)
+                except RconConnectionClosed:
+                    if responses:
+                        return "\n".join(responses)
+                    raise
                 if packet_id == COMMAND_REQUEST_ID and body.strip():
                     responses.append(body.strip())
+                first_response = False
     except Exception as exc:
         return f"[RCON Error] {exc}"

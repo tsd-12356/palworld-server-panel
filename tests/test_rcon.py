@@ -55,15 +55,13 @@ class RconServer:
 
 
 class RconCommandTests(unittest.TestCase):
-    def test_collects_multiple_packets_until_sentinel(self):
+    def test_collects_multiple_packets_until_idle(self):
         def handler(connection):
             self.assertEqual(read_packet(connection), (1, 3, "secret"))
             send_packet(connection, 1, 2)
             self.assertEqual(read_packet(connection), (2, 2, "ShowPlayers"))
-            self.assertEqual(read_packet(connection), (3, 2, ""))
             send_packet(connection, 2, 0, "Name,Player UID,Steam ID\n")
             send_packet(connection, 2, 0, "Player One,uid-1,steam-1")
-            send_packet(connection, 3, 0)
 
         server = RconServer(handler)
         response = rcon_command("127.0.0.1", server.port, "secret", "ShowPlayers", timeout=2)
