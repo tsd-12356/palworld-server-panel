@@ -93,6 +93,7 @@ UPDATE_SCRIPT = Path(os.environ.get("PANEL_UPDATE_SCRIPT", "/home/demo/palworld-
 UPDATE_STATUS = Path(os.environ.get("PANEL_UPDATE_STATUS", "/home/demo/palworld-panel/update-status.json"))
 UPDATE_LOG = Path(os.environ.get("PANEL_UPDATE_LOG", "/home/demo/palworld-panel/update.log"))
 PALWORLD_UPDATE_REQUEST = Path(os.environ.get("PALWORLD_UPDATE_REQUEST_FILE", str(PALWORLD_DIR / ".panel-update-request")))
+DOCKER_STEAMCMD_LOG = Path(os.environ.get("STEAMCMD_UPDATE_LOG", str(PALWORLD_DIR / ".panel-steamcmd-update.log")))
 UPDATE_SERVICE = os.environ.get("PANEL_UPDATE_SERVICE", "palworld-panel-update.service")
 UPDATE_TIMER = os.environ.get("PANEL_UPDATE_TIMER", "palworld-panel-update.timer")
 INSTALL_SCRIPT = Path(os.environ.get("PANEL_INSTALL_SCRIPT", "/home/demo/palworld-panel/panel_install.py"))
@@ -334,6 +335,25 @@ def read_docker_install_marker() -> dict[str, Any]:
     except Exception:
         return {}
     return {}
+
+
+def get_steamcmd_failure_detail() -> str:
+    log_lines = tail_text(DOCKER_STEAMCMD_LOG, 40)
+    if log_lines:
+        useful_lines = [
+            line.strip()
+            for line in log_lines
+            if any(token in line.lower() for token in ("error", "failed", "state is", "attempt", "network"))
+        ]
+        detail = " | ".join((useful_lines or log_lines)[-8:])
+        if detail:
+            return detail[:2000]
+
+    code, output = docker_exec_shell(
+        "log=/home/palworld/Steam/logs/content_log.txt; "
+        "test -f \"$log\" && grep -E \"Access Denied|Failed downloading|No connection\" \"$log\" | tail -n 1 || true"
+    )
+    return output.strip() if code == 0 else ""
 
 
 def tcp_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
@@ -713,13 +733,18 @@ def run_docker_update_check() -> dict[str, Any]:
 def read_update_status() -> dict[str, Any]:
     status = read_json(UPDATE_STATUS, {})
     if using_docker_backend():
+        log_tail = tail_text(UPDATE_LOG, 60)
+        steamcmd_log_tail = tail_text(DOCKER_STEAMCMD_LOG, 80)
+        if steamcmd_log_tail:
+            log_tail.extend(["--- SteamCMD update diagnostics ---", *steamcmd_log_tail])
+        log_tail.extend(docker_container_logs(40))
         status.update(
             {
                 "backend": "docker",
                 "service_active": False,
                 "timer_active": False,
                 "auto_update_enabled": False,
-                "log_tail": tail_text(UPDATE_LOG, 60) + docker_container_logs(40),
+                "log_tail": log_tail[-180:],
             }
         )
         return status
@@ -800,7 +825,7 @@ def start_update_service() -> tuple[bool, str]:
                 PALWORLD_UPDATE_REQUEST.parent.mkdir(parents=True, exist_ok=True)
                 PALWORLD_UPDATE_REQUEST.write_text("update\n", encoding="utf-8")
                 container.restart(timeout=120)
-                deadline = time.monotonic() + 900
+                deadline = time.monotonic() + int(os.environ.get("PALWORLD_UPDATE_TIMEOUT_SECONDS", "2700"))
 
                 while True:
                     local = parse_steam_manifest()
@@ -831,9 +856,12 @@ def start_update_service() -> tuple[bool, str]:
 
                     raw_logs = container.logs(since=started_at, tail=160, stdout=True, stderr=True)
                     log_text = raw_logs.decode("utf-8", errors="replace") if isinstance(raw_logs, bytes) else str(raw_logs)
-                    if "SteamCMD failed" in log_text or "Error! App '2394010' state is" in log_text:
+                    marker = read_docker_install_marker()
+                    if marker.get("phase") == "failed" or marker.get("fallback_used"):
+                        detail = str(marker.get("steamcmd_detail") or get_steamcmd_failure_detail())
+                        detail_suffix = f" Detail: {detail}" if detail else ""
                         raise RuntimeError(
-                            f"SteamCMD update failed; manifest is still {local.get('manifest') or 'unknown'} (expected {expected_manifest})"
+                            f"SteamCMD update failed after retries; manifest is still {local.get('manifest') or 'unknown'} (expected {expected_manifest}).{detail_suffix}"
                         )
 
                     if time.monotonic() >= deadline:
