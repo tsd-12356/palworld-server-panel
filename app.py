@@ -29,7 +29,7 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
-from rcon import rcon_command as send_rcon_command
+from rcon import execute_rcon_command, rcon_command as send_rcon_command
 
 
 app = Flask(__name__)
@@ -2170,6 +2170,19 @@ def rcon_command(command: str) -> str:
     return send_rcon_command(RCON_HOST, RCON_PORT, RCON_PASSWORD, command, timeout=RCON_TIMEOUT_SECONDS)
 
 
+def execute_panel_rcon_command(command: str):
+    """Run a command and retain its acknowledgement metadata for the API."""
+    command_name = command.split(maxsplit=1)[0].casefold()
+    return execute_rcon_command(
+        RCON_HOST,
+        RCON_PORT,
+        RCON_PASSWORD,
+        command,
+        timeout=RCON_TIMEOUT_SECONDS,
+        allow_no_response=command_name in {"broadcast", "showplayers"},
+    )
+
+
 def get_server_status() -> dict[str, Any]:
     if using_docker_backend():
         try:
@@ -2633,10 +2646,28 @@ def api_rcon():
     command = str(data.get("command", "")).strip()
     if not command:
         return jsonify({"success": False, "message": "No command provided"}), 400
-    response = rcon_command(command)
-    success = not response.startswith("[RCON Error]")
-    audit_event("rcon.command", success, command=command)
-    return jsonify({"success": success, "response": response})
+    command_name = command.split(maxsplit=1)[0].casefold()
+    if command_name == "broadcast" and any(ord(char) > 127 for char in command):
+        message = "Palworld RCON 广播仅可靠支持英文/ASCII 字符；中文或表情会被游戏端错误解析"
+        audit_event("rcon.command", False, command=command, message=message)
+        return jsonify({"success": False, "acknowledged": False, "response": "", "message": message}), 400
+
+    result = execute_panel_rcon_command(command)
+    audit_event(
+        "rcon.command",
+        result.success,
+        command=command,
+        acknowledged=result.acknowledged,
+        message=result.message,
+    )
+    return jsonify(
+        {
+            "success": result.success,
+            "acknowledged": result.acknowledged,
+            "response": result.response,
+            "message": result.message,
+        }
+    ), (200 if result.success else 502)
 
 
 @app.route("/api/saves/status")

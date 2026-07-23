@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import socket
 import struct
 import time
@@ -10,6 +11,7 @@ AUTH_PACKET_TYPE = 3
 COMMAND_PACKET_TYPE = 2
 AUTH_REQUEST_ID = 1
 COMMAND_REQUEST_ID = 2
+PALWORLD_RESPONSE_ID = 0
 MAX_PACKET_SIZE = 4 * 1024 * 1024
 
 
@@ -17,15 +19,32 @@ class RconConnectionClosed(RuntimeError):
     """Raised when the server closes a completed RCON response."""
 
 
-def rcon_command(host: str, port: int, password: str, command: str, timeout: float = 10) -> str:
+@dataclass(frozen=True)
+class RconResult:
+    """The result of a single Source RCON command."""
+
+    success: bool
+    acknowledged: bool
+    response: str = ""
+    message: str = ""
+
+
+def execute_rcon_command(
+    host: str,
+    port: int,
+    password: str,
+    command: str,
+    timeout: float = 10,
+    allow_no_response: bool = False,
+) -> RconResult:
     """Run a Source RCON command and collect its response until it becomes idle.
 
-    Palworld's RCON server accepts Source RCON packets but does not acknowledge
-    an empty completion sentinel. A shared overall deadline and short idle grace
-    period therefore preserve multi-packet responses without waiting forever.
+    Palworld does not acknowledge an empty completion sentinel and can respond
+    with packet ID 0 rather than echoing the command request ID. A shared
+    deadline and short idle grace preserve compatible multi-packet responses.
     """
     if not password:
-        return "[RCON Error] RCON_PASSWORD is not configured"
+        return RconResult(False, False, message="RCON_PASSWORD is not configured")
 
     deadline = time.monotonic() + timeout
 
@@ -64,13 +83,14 @@ def rcon_command(host: str, port: int, password: str, command: str, timeout: flo
             send_packet(AUTH_REQUEST_ID, AUTH_PACKET_TYPE, password)
             packet_id, _, _ = recv_packet()
             if packet_id == -1:
-                return "[RCON Error] Auth failed"
+                return RconResult(False, False, message="Auth failed")
             if packet_id != AUTH_REQUEST_ID:
                 raise RuntimeError("unexpected authentication response")
 
             send_packet(COMMAND_REQUEST_ID, COMMAND_PACKET_TYPE, command)
 
             responses: list[str] = []
+            acknowledged = False
             first_response = True
             while True:
                 try:
@@ -79,17 +99,40 @@ def rcon_command(host: str, port: int, password: str, command: str, timeout: flo
                     else:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
-                            return "\n".join(responses)
+                            break
                         sock.settimeout(min(1.5, remaining))
                     packet_id, _, body = recv_packet()
                 except socket.timeout:
-                    return "\n".join(responses)
+                    break
                 except RconConnectionClosed:
-                    if responses:
-                        return "\n".join(responses)
+                    if acknowledged:
+                        break
                     raise
-                if packet_id == COMMAND_REQUEST_ID and body.strip():
-                    responses.append(body.strip())
+
+                if packet_id in {COMMAND_REQUEST_ID, PALWORLD_RESPONSE_ID}:
+                    acknowledged = True
+                    if body.strip():
+                        responses.append(body.strip())
                 first_response = False
+
+            if not acknowledged:
+                if allow_no_response:
+                    return RconResult(
+                        True,
+                        False,
+                        message="Command sent; this Palworld command did not return an RCON response",
+                    )
+                return RconResult(False, False, message="The server did not acknowledge the command")
+            if responses:
+                return RconResult(True, True, response="\n".join(responses))
+            return RconResult(True, True, message="Command acknowledged; the server returned no text")
     except Exception as exc:
-        return f"[RCON Error] {exc}"
+        return RconResult(False, False, message=str(exc))
+
+
+def rcon_command(host: str, port: int, password: str, command: str, timeout: float = 10) -> str:
+    """Run a command and retain the legacy string return contract."""
+    result = execute_rcon_command(host, port, password, command, timeout)
+    if result.success:
+        return result.response
+    return f"[RCON Error] {result.message}"
