@@ -37,9 +37,9 @@ class RestPlayersTests(unittest.TestCase):
         ).encode()
         response.__enter__.return_value = response
         response.__exit__.return_value = False
-        with patch.object(app, "PALWORLD_REST_ENABLED", True), patch.object(app, "PALWORLD_REST_PASSWORD", "secret"), patch(
-            "app.urllib.request.urlopen", return_value=response
-        ) as urlopen:
+        with patch.object(app, "PALWORLD_REST_ENABLED", True), patch.object(app, "PALWORLD_REST_PASSWORD", "secret"), patch.object(
+            app, "PALWORLD_REST_HOST", "127.0.0.1"
+        ), patch("app.urllib.request.urlopen", return_value=response) as urlopen:
             players, source = app.get_rest_players()
 
         request = urlopen.call_args.args[0]

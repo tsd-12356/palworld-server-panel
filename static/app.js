@@ -3122,7 +3122,12 @@ async function executeRconCommand(command) {
             body: JSON.stringify({ command }),
             timeout: 15000,
         });
-        appendConsoleLine(data.response || data.message || "OK", data.success ? "response" : "error");
+        if (data.success) {
+            appendConsoleLine(data.response || data.message || "命令已送达", "response");
+        } else {
+            appendConsoleLine(`Error: ${data.message || "RCON command failed"}`, "error");
+            showToast(data.message || "RCON command failed", "error");
+        }
     } catch (error) {
         appendConsoleLine(`Error: ${error.message}`, "error");
         showToast(error.message, "error");
@@ -3141,7 +3146,14 @@ async function quickRconCommand(command) {
             ],
         });
         if (!values) return;
-        await executeRconCommand(`Broadcast ${values.message.trim()}`);
+        const message = values.message.trim();
+        if (/[^\x20-\x7E]/.test(message)) {
+            const error = "Palworld RCON 广播仅可靠支持英文/ASCII 字符；中文或表情会被游戏端错误解析。";
+            appendConsoleLine(`Error: ${error}`, "error");
+            showToast(error, "error");
+            return;
+        }
+        await executeRconCommand(`Broadcast ${message}`);
         return;
     }
     await executeRconCommand(command);
