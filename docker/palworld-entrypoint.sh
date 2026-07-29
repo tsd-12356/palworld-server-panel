@@ -13,6 +13,7 @@ SERVER_DESCRIPTION="${SERVER_DESCRIPTION:-Managed by Palworld Panel}"
 SERVER_MAX_PLAYERS="${SERVER_MAX_PLAYERS:-32}"
 STEAMCMD_RETRIES="${STEAMCMD_RETRIES:-8}"
 STEAMCMD_RETRY_DELAY="${STEAMCMD_RETRY_DELAY:-30}"
+STEAMCMD_ATTEMPT_TIMEOUT="${STEAMCMD_ATTEMPT_TIMEOUT:-1800}"
 STEAMCMD_NETWORK_MODE="${STEAMCMD_NETWORK_MODE:-auto}"
 STEAMCMD_LOG_FILE="${STEAMCMD_UPDATE_LOG:-${PALWORLD_DIR}/.panel-steamcmd-update.log}"
 PALWORLD_START_ON_STEAMCMD_FAILURE="${PALWORLD_START_ON_STEAMCMD_FAILURE:-true}"
@@ -78,6 +79,19 @@ has_existing_installation() {
   [[ -x "${PALWORLD_DIR}/PalServer.sh" ]]
 }
 
+installation_needs_resume() {
+  local manifest="${PALWORLD_DIR}/steamapps/appmanifest_${PALWORLD_APP_ID}.acf"
+
+  if [[ -d "${PALWORLD_DIR}/steamapps/downloading/${PALWORLD_APP_ID}" ]]; then
+    return 0
+  fi
+  if [[ -f "${manifest}" ]]; then
+    ! grep -Eq '"StateFlags"[[:space:]]+"4"' "${manifest}"
+    return
+  fi
+  compgen -G "${manifest}.stale-*" >/dev/null
+}
+
 has_proxy_environment() {
   [[ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${ALL_PROXY:-}${http_proxy:-}${https_proxy:-}${all_proxy:-}" ]]
 }
@@ -104,12 +118,14 @@ steamcmd_network_for_attempt() {
 run_steamcmd() {
   local network_mode="$1"
   local -a env_command=(env)
+  local -a steamcmd_command=("${STEAMCMD_DIR}/steamcmd.sh" -tcp)
 
   if [[ "${network_mode}" == "direct" ]]; then
     env_command=(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy)
   fi
 
-  runuser -u "${PALWORLD_USER}" -- "${env_command[@]}" "${STEAMCMD_DIR}/steamcmd.sh" \
+  timeout --signal=TERM --kill-after=15 "${STEAMCMD_ATTEMPT_TIMEOUT}" \
+    runuser -u "${PALWORLD_USER}" -- "${env_command[@]}" "${steamcmd_command[@]}" \
     +@sSteamCmdForcePlatformType linux \
     +@sSteamCmdForcePlatformBitness 64 \
     +force_install_dir "${PALWORLD_DIR}" \
@@ -117,6 +133,26 @@ run_steamcmd() {
     "${steamcmd_args[@]}" \
     +quit 2>&1 | tee -a "${STEAMCMD_LOG_FILE}"
   return "${PIPESTATUS[0]}"
+}
+
+repair_stale_manifest() {
+  local manifest="${PALWORLD_DIR}/steamapps/appmanifest_${PALWORLD_APP_ID}.acf"
+  local content_log="/home/${PALWORLD_USER}/Steam/logs/content_log.txt"
+  local backup
+
+  [[ -f "${manifest}" ]] || return 1
+  if [[ "${1:-}" != "force" ]]; then
+    grep -q "Access Denied" "${STEAMCMD_LOG_FILE}" 2>/dev/null \
+      || grep -q "Access Denied" "${content_log}" 2>/dev/null \
+      || return 1
+  fi
+
+  backup="${manifest}.stale-$(date -u +%Y%m%dT%H%M%SZ)"
+  echo "[entrypoint] Steam rejected the cached depot manifest; backing up ${manifest} to ${backup}" | tee -a "${STEAMCMD_LOG_FILE}"
+  mv "${manifest}" "${backup}"
+  rm -rf "${PALWORLD_DIR}/steamapps/downloading/${PALWORLD_APP_ID}" \
+    "${PALWORLD_DIR}/steamapps/temp/${PALWORLD_APP_ID}"
+  return 0
 }
 
 update_mode="normal"
@@ -143,6 +179,11 @@ if [[ -f "${PALWORLD_UPDATE_REQUEST_FILE}" ]]; then
       echo "[entrypoint] Ignoring invalid update request mode: ${requested_mode:-empty}" >&2
       ;;
   esac
+fi
+
+if has_existing_installation && [[ "${update_mode}" == "normal" ]] && installation_needs_resume; then
+  echo "[entrypoint] Incomplete Steam update detected; resuming before starting Palworld"
+  update_mode="update"
 fi
 
 if has_existing_installation && [[ "${update_mode}" == "normal" ]]; then
@@ -174,7 +215,15 @@ else
   chown "${PALWORLD_USER}:${PALWORLD_USER}" "${STEAMCMD_LOG_FILE}"
   attempt=1
   steamcmd_succeeded=false
+  stale_manifest_repaired=false
   steamcmd_exit_code=0
+  manifest="${PALWORLD_DIR}/steamapps/appmanifest_${PALWORLD_APP_ID}.acf"
+  if [[ "${update_mode}" == "update" && -f "${manifest}" ]] \
+    && grep -Eq '"StateFlags"[[:space:]]+"6"' "${manifest}" \
+    && grep -Eq '"UpdateResult"[[:space:]]+"6"' "${manifest}"; then
+    repair_stale_manifest force
+    stale_manifest_repaired=true
+  fi
   while [[ "${attempt}" -le "${STEAMCMD_RETRIES}" ]]; do
     steamcmd_network_mode="$(steamcmd_network_for_attempt "${attempt}")"
     echo "[entrypoint] SteamCMD attempt ${attempt}/${STEAMCMD_RETRIES} via ${steamcmd_network_mode}" | tee -a "${STEAMCMD_LOG_FILE}"
@@ -183,6 +232,12 @@ else
       break
     else
       steamcmd_exit_code=$?
+    fi
+
+    if [[ "${stale_manifest_repaired}" != "true" ]] && repair_stale_manifest; then
+      stale_manifest_repaired=true
+      echo "[entrypoint] Retrying with a fresh app manifest" | tee -a "${STEAMCMD_LOG_FILE}"
+      continue
     fi
 
     if [[ "${attempt}" -ge "${STEAMCMD_RETRIES}" ]]; then
