@@ -1,5 +1,7 @@
 # Palworld Server Panel
 
+[简体中文](README.md) | [English](README_EN.md)
+
 [![CI](https://github.com/tsd-12356/palworld-server-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/tsd-12356/palworld-server-panel/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docker Compose](https://img.shields.io/badge/deploy-Docker%20Compose-2496ED.svg)](docs/DOCKER.md)
