@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Docker Compose](https://img.shields.io/badge/deploy-Docker%20Compose-2496ED.svg)](docs/DOCKER.md)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](requirements.txt)
-[![Release](https://img.shields.io/badge/release-v2.0.0-blue.svg)](docs/releases/v2.0.0.md)
+[![Release](https://img.shields.io/badge/release-v2.0.1-blue.svg)](docs/releases/v2.0.1.md)
 
 一个面向 Palworld Dedicated Server 的现代 Web 管理面板。主打 **自动化、省心运维、浅色毛玻璃 UI**：支持 Docker Compose 一键部署、服务器安装向导、存档管理、配置编辑、RCON、日志、机器状态、手动更新、操作审计和实验性 MOD 管理，适合个人服务器、朋友服和内网运维。
 
@@ -14,7 +14,7 @@
 
 - **部署省心**：推荐 Docker Compose 一键启动，也保留 Ubuntu/Debian 原生 systemd 安装器。
 - **安装省心**：内置安装向导，可检查环境、安装/修复 Palworld、SteamCMD、systemd 服务和权限。
-- **更新省心**：支持手动检测版本、后台触发更新，更新日志和状态直接在面板里看。
+- **更新省心**：支持手动检测版本、后台触发更新、损坏 manifest 自动修复和中断续传，更新日志和状态直接在面板里看。
 - **存档省心**：支持备份、上传 zip 导入、创建新世界、切换存档、删除存档。
 - **MOD 实验增强**：2.0 起支持上传 `.pak/.sig/.zip`、启用/禁用、移入废纸篓、清理废纸篓和应用重启；会拒绝空文件、脚本和高风险压缩包内容。
 - **配置省心**：可视化编辑 `PalWorldSettings.ini`，保存前显示差异确认，保存并重启有步骤反馈。
@@ -42,7 +42,7 @@
 - **配置操作自动化**：保存配置前显示字段差异，保存并重启会展示“保存配置 -> 重启服务 -> 等待恢复 -> 刷新状态”。
 - **存档操作自动化**：切换存档会自动停止服务、备份当前存档、替换存档、修复权限、启动服务。
 - **MOD 操作半自动化**：上传后自动识别 PAK 或官方 `Info.json` 包，启用/禁用后可一键备份并重启；MOD 兼容性仍取决于游戏版本、服务端系统和 MOD 作者实现。
-- **更新流程自动化**：手动检测 manifest，确认后后台执行更新流程，日志和结果保留在面板里。
+- **更新流程自动化**：手动检测 manifest，确认后后台执行更新流程；SteamCMD 使用 TCP 模式，遇到损坏 manifest 会保留备份并重新获取，容器异常重启后可自动续传。
 - **运维审计自动化**：启动、停止、重启、配置保存、RCON、存档操作都会进入操作记录。
 
 ## 核心功能
@@ -83,10 +83,16 @@ PANEL_SECRET_KEY=change-this-secret
 docker compose up -d --build
 ```
 
-访问：
+面板默认只监听宿主机 `127.0.0.1:8080`，请通过同机 Nginx/Caddy 反向代理、SSH 隧道或 Tailscale Funnel/Serve 访问。例如同机 Nginx：
 
-```text
-http://服务器IP:8080
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
 ```
 
 首次启动时，`palworld` 容器会自动安装 SteamCMD 和 Palworld Dedicated Server，耗时取决于网络和磁盘速度。
@@ -178,6 +184,7 @@ journalctl -u palworld.service -f
 - [常见问题](docs/FAQ.md)
 - [安全说明](docs/SECURITY.md)
 - [Roadmap](ROADMAP.md)
+- [v2.0.1 发布说明](docs/releases/v2.0.1.md)
 - [v2.0.0 发布说明](docs/releases/v2.0.0.md)
 - [v0.1.0-beta 发布说明](docs/releases/v0.1.0-beta.md)
 
