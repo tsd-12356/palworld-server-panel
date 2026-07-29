@@ -8,6 +8,18 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("flask"), "Flask is not installed")
 class ConfigAndStatusTests(unittest.TestCase):
+    def test_official_server_limits_are_enforced(self):
+        self.assertEqual(app.NUMERIC_RANGES["BaseCampWorkerMaxNum"], (1, 50))
+        self.assertEqual(app.NUMERIC_RANGES["BaseCampMaxNumInGuild"], (1, 512))
+        self.assertEqual(app.NUMERIC_RANGES["ServerReplicatePawnCullDistance"], (5000, 15000))
+
+    def test_randomizer_choices_match_current_server_options(self):
+        self.assertEqual(app.CHOICE_FIELDS["RandomizerType"], {"None", "Region", "All"})
+
+    def test_pvp_additional_drop_accepts_an_item_id(self):
+        self.assertIn("AdditionalDropItemWhenPlayerKillingInPvPMode", app.STRING_FIELDS)
+        self.assertNotIn("AdditionalDropItemWhenPlayerKillingInPvPMode", app.CHOICE_FIELDS)
+
     @classmethod
     def setUpClass(cls):
         global app

@@ -111,6 +111,7 @@ STRING_FIELDS = {
     "AdminPassword",
     "RandomizerSeed",
     "DenyTechnologyList",
+    "AdditionalDropItemWhenPlayerKillingInPvPMode",
 }
 UNQUOTED_STRING_FIELDS: set[str] = set()
 SAVE_UPLOAD_MAX_EXTRACTED_BYTES = int(os.environ.get("SAVE_UPLOAD_MAX_EXTRACTED_BYTES", str(2 * 1024 * 1024 * 1024)))
@@ -122,7 +123,7 @@ NUMERIC_RANGES = {
     "AutoSaveSpan": (1, 3600),
     "ChatPostLimitPerMinute": (0, 1000),
     "BaseCampMaxNum": (1, 512),
-    "BaseCampWorkerMaxNum": (1, 100),
+    "BaseCampWorkerMaxNum": (1, 50),
     "BaseCampMaxNumInGuild": (1, 512),
     "ExpRate": (0.1, 20),
     "PalCaptureRate": (0.1, 5),
@@ -159,7 +160,7 @@ NUMERIC_RANGES = {
     "SupplyDropSpan": (1, 1440),
     "AutoResetGuildTimeNoOnlinePlayers": (0, 720),
     "MaxBuildingLimitNum": (0, 100000),
-    "ServerReplicatePawnCullDistance": (1000, 100000),
+    "ServerReplicatePawnCullDistance": (5000, 15000),
     "ItemContainerForceMarkDirtyInterval": (0.1, 60),
     "PlayerDataPalStorageUpdateCheckTickInterval": (0.1, 60),
     "ItemCorruptionMultiplier": (0, 10),
@@ -185,21 +186,21 @@ FIELD_LABELS = {
     "AdminPassword": "管理员密码",
     "ServerPlayerMaxNum": "最大玩家数",
     "GuildPlayerMaxNum": "公会最大人数",
-    "CoopPlayerMaxNum": "合作玩家人数",
+    "CoopPlayerMaxNum": "合作模式最大玩家数",
     "AutoSaveSpan": "自动存档间隔",
     "ChatPostLimitPerMinute": "聊天限速",
     "BaseCampMaxNum": "据点最大数量",
-    "BaseCampWorkerMaxNum": "据点工人数上限",
+    "BaseCampWorkerMaxNum": "每个据点的帕鲁上限",
     "BaseCampMaxNumInGuild": "公会据点上限",
     "ExpRate": "经验倍率",
-    "PalCaptureRate": "帕鲁捕获率",
-    "PalSpawnNumRate": "帕鲁刷新率",
-    "ItemCorruptionMultiplier": "物品腐化倍率",
-    "MonsterFarmActionSpeedRate": "牧场动作速度倍率",
+    "PalCaptureRate": "帕鲁捕获倍率",
+    "PalSpawnNumRate": "帕鲁生成数量倍率",
+    "ItemCorruptionMultiplier": "物品腐败速度倍率",
+    "MonsterFarmActionSpeedRate": "牧场放牧产出速度倍率",
     "DropItemMaxNum": "掉落物最大数量",
     "PhysicsActiveDropItemMaxNum": "物理掉落物上限",
-    "MaxBuildingLimitNum": "建筑总数上限",
-    "ServerReplicatePawnCullDistance": "网络复制距离",
+    "MaxBuildingLimitNum": "每名玩家建筑数量上限",
+    "ServerReplicatePawnCullDistance": "帕鲁同步距离",
     "DenyTechnologyList": "禁用科技列表",
     "RESTAPIPort": "REST API 端口",
 }
@@ -249,9 +250,8 @@ BOOL_FIELDS = {
 
 CHOICE_FIELDS = {
     "Difficulty": {"None", "Casual", "Normal", "Hard", "Hardcore"},
-    "RandomizerType": {"None", "Pal", "MapObject", "All"},
+    "RandomizerType": {"None", "Region", "All"},
     "DeathPenalty": {"None", "Item", "ItemAndEquipment", "All"},
-    "AdditionalDropItemWhenPlayerKillingInPvPMode": {"None", "PlayerDropItem", "All"},
 }
 
 ALLOWED_CONFIG_KEYS = STRING_FIELDS | set(NUMERIC_RANGES) | BOOL_FIELDS | set(CHOICE_FIELDS)
