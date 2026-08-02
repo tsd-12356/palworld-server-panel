@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -19,6 +20,12 @@ class ConfigAndStatusTests(unittest.TestCase):
     def test_pvp_additional_drop_accepts_an_item_id(self):
         self.assertIn("AdditionalDropItemWhenPlayerKillingInPvPMode", app.STRING_FIELDS)
         self.assertNotIn("AdditionalDropItemWhenPlayerKillingInPvPMode", app.CHOICE_FIELDS)
+
+    def test_steamcmd_refreshes_app_metadata_before_updating(self):
+        entrypoint = Path(__file__).parents[1] / "docker" / "palworld-entrypoint.sh"
+        text = entrypoint.read_text(encoding="utf-8")
+        self.assertIn("refresh_steamcmd_app_info", text)
+        self.assertIn('refresh_steamcmd_app_info "${steamcmd_network_mode}" && run_steamcmd', text)
 
     @classmethod
     def setUpClass(cls):

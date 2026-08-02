@@ -135,6 +135,24 @@ run_steamcmd() {
   return "${PIPESTATUS[0]}"
 }
 
+refresh_steamcmd_app_info() {
+  local network_mode="$1"
+  local -a env_command=(env)
+  local -a steamcmd_command=("${STEAMCMD_DIR}/steamcmd.sh" -tcp)
+
+  if [[ "${network_mode}" == "direct" ]]; then
+    env_command=(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy)
+  fi
+
+  echo "[entrypoint] Refreshing Steam app metadata" | tee -a "${STEAMCMD_LOG_FILE}"
+  timeout --signal=TERM --kill-after=15 "${STEAMCMD_ATTEMPT_TIMEOUT}" \
+    runuser -u "${PALWORLD_USER}" -- "${env_command[@]}" "${steamcmd_command[@]}" \
+    +login anonymous \
+    +app_info_update 1 \
+    +quit 2>&1 | tee -a "${STEAMCMD_LOG_FILE}"
+  return "${PIPESTATUS[0]}"
+}
+
 repair_stale_manifest() {
   local manifest="${PALWORLD_DIR}/steamapps/appmanifest_${PALWORLD_APP_ID}.acf"
   local content_log="/home/${PALWORLD_USER}/Steam/logs/content_log.txt"
@@ -227,7 +245,7 @@ else
   while [[ "${attempt}" -le "${STEAMCMD_RETRIES}" ]]; do
     steamcmd_network_mode="$(steamcmd_network_for_attempt "${attempt}")"
     echo "[entrypoint] SteamCMD attempt ${attempt}/${STEAMCMD_RETRIES} via ${steamcmd_network_mode}" | tee -a "${STEAMCMD_LOG_FILE}"
-    if run_steamcmd "${steamcmd_network_mode}"; then
+    if refresh_steamcmd_app_info "${steamcmd_network_mode}" && run_steamcmd "${steamcmd_network_mode}"; then
       steamcmd_succeeded=true
       break
     else
