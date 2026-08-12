@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from contextlib import contextmanager
@@ -67,9 +68,23 @@ def log(message: str) -> None:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with lock_path.open("a+b") as lock_handle:
+        import fcntl
+
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        tmp_name = ""
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as handle:
+                tmp_name = handle.name
+                handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, path)
+        finally:
+            if tmp_name:
+                Path(tmp_name).unlink(missing_ok=True)
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def append_audit(action: str, success: bool, **details: Any) -> None:
@@ -216,7 +231,7 @@ def check_update() -> dict[str, Any]:
 @contextmanager
 def operation_lock():
     SAVE_SLOT_ROOT.mkdir(parents=True, exist_ok=True)
-    handle = SAVE_LOCK_PATH.open("w", encoding="utf-8")
+    handle = SAVE_LOCK_PATH.open("a+", encoding="utf-8")
     try:
         import fcntl
 
@@ -224,6 +239,8 @@ def operation_lock():
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RuntimeError("another save/update operation is already running") from exc
+        handle.seek(0)
+        handle.truncate()
         handle.write(f"update {os.getpid()} {iso_now()}\n")
         handle.flush()
         yield
@@ -310,6 +327,8 @@ def backup_current_save() -> str:
         return "skipped-empty-save"
     SAVE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     world_id = current_world_id()
+    if not re.fullmatch(r"[A-Fa-f0-9]{32}", world_id):
+        raise RuntimeError("invalid configured world id")
     backup_id = f"{time.strftime('%Y%m%d-%H%M%S')}-before-update-{world_id}"
     target = SAVE_BACKUP_DIR / backup_id
     shutil.copytree(ACTIVE_SAVEGAMES_DIR, target / "SaveGames" / "0", symlinks=False)
@@ -335,7 +354,9 @@ def fix_ownership() -> None:
     owner = f"{PANEL_USER}:{PANEL_USER}"
     for path in paths:
         if path.exists():
-            run_privileged([CHOWN, "-R", owner, str(path)], timeout=180)
+            _, error, code = run_privileged([CHOWN, "-R", owner, str(path)], timeout=180)
+            if code != 0:
+                raise RuntimeError(error or f"failed to set ownership on {path}")
 
 
 def run_steam_update() -> None:
@@ -366,9 +387,11 @@ def run_steam_update() -> None:
 
 def apply_update(auto: bool = False) -> None:
     status.load_existing()
-    status.set(running=True, phase="running", started_at=iso_now(), finished_at="", success=None, steps=[], message="Checking for updates")
-    try:
-        with operation_lock():
+    was_running = False
+    stopped_for_update = False
+    with operation_lock():
+        try:
+            status.set(running=True, phase="running", started_at=iso_now(), finished_at="", success=None, steps=[], message="Checking for updates")
             details = check_update()
             if auto and not AUTO_UPDATE_ENABLED:
                 status.set(running=False, phase="disabled", finished_at=iso_now(), success=True, message="Auto update disabled")
@@ -388,24 +411,27 @@ def apply_update(auto: bool = False) -> None:
                 status.step("save", "active", "Saving current world")
                 save_output = rcon_command("Save", timeout=10)
                 log(f"RCON Save: {save_output or 'OK'}")
+                if save_output.startswith("[RCON Error]"):
+                    raise RuntimeError(f"RCON save failed: {save_output}")
                 time.sleep(5)
                 status.step("save", "done", "Save command sent")
             else:
                 status.step("notify", "done", "Server was stopped")
                 status.step("save", "done", "Server was stopped")
 
-            status.step("backup", "active", "Backing up current save")
-            backup_id = backup_current_save()
-            status.step("backup", "done", backup_id)
-
             if was_running:
                 status.step("stop", "active", "Stopping Palworld service")
                 _, err, code = systemctl("stop", PALWORLD_SERVICE, timeout=90)
+                stopped_for_update = code == 0
                 if code != 0 or not wait_for_service(False, 120):
                     raise RuntimeError(err or "failed to stop Palworld service")
                 status.step("stop", "done", "Server stopped")
             else:
                 status.step("stop", "done", "Server already stopped")
+
+            status.step("backup", "active", "Backing up current save")
+            backup_id = backup_current_save()
+            status.step("backup", "done", backup_id)
 
             status.step("update", "active", "Updating with SteamCMD")
             run_steam_update()
@@ -415,40 +441,49 @@ def apply_update(auto: bool = False) -> None:
             fix_ownership()
             status.step("permissions", "done", "Ownership fixed")
 
-            status.step("start", "active", "Starting Palworld service")
-            _, err, code = systemctl("start", PALWORLD_SERVICE, timeout=90)
-            if code != 0 or not wait_for_service(True, 150):
-                raise RuntimeError(err or "failed to start Palworld service")
-            status.step("start", "done", "Server started")
+            if was_running:
+                status.step("start", "active", "Starting Palworld service")
+                _, err, code = systemctl("start", PALWORLD_SERVICE, timeout=90)
+                if code != 0 or not wait_for_service(True, 150):
+                    raise RuntimeError(err or "failed to start Palworld service")
+                stopped_for_update = False
+                status.step("start", "done", "Server started")
+            else:
+                status.step("start", "done", "Server was stopped; leaving it stopped")
 
             final = check_update()
             status.step("complete", "done", "Update complete")
             status.set(running=False, phase="complete", finished_at=iso_now(), success=True, message="Update complete")
             append_audit("update.apply", True, message="update complete", backup_id=backup_id, **final)
             log("Update complete")
-    except Exception as exc:
-        message = str(exc)
-        status.step("failed", "error", message)
-        status.set(running=False, phase="failed", finished_at=iso_now(), success=False, message=message)
-        append_audit("update.failed", False, message=message)
-        log(f"Update failed: {message}")
-        raise
+        except Exception as exc:
+            message = str(exc)
+            if was_running and stopped_for_update:
+                _, restart_error, restart_code = systemctl("start", PALWORLD_SERVICE, timeout=90)
+                restarted = restart_code == 0 and wait_for_service(True, 150)
+                status.step("recovery-start", "done" if restarted else "error", "Server restarted after update failure" if restarted else (restart_error or "failed to restart server after update failure"))
+            status.step("failed", "error", message)
+            status.set(running=False, phase="failed", finished_at=iso_now(), success=False, message=message)
+            append_audit("update.failed", False, message=message)
+            log(f"Update failed: {message}")
+            raise
 
 
 def check_only() -> None:
     status.load_existing()
-    status.set(running=True, phase="checking", started_at=iso_now(), success=None, message="Checking for updates", steps=[])
-    try:
-        details = check_update()
-        status.set(running=False, finished_at=iso_now(), success=True)
-        append_audit("update.check", True, **details)
-        log(status.payload.get("message", "Check complete"))
-    except Exception as exc:
-        status.step("detect", "error", str(exc))
-        status.set(running=False, phase="failed", finished_at=iso_now(), success=False, message=str(exc))
-        append_audit("update.check", False, message=str(exc))
-        log(f"Check failed: {exc}")
-        raise
+    with operation_lock():
+        try:
+            status.set(running=True, phase="checking", started_at=iso_now(), success=None, message="Checking for updates", steps=[])
+            details = check_update()
+            status.set(running=False, finished_at=iso_now(), success=True)
+            append_audit("update.check", True, **details)
+            log(status.payload.get("message", "Check complete"))
+        except Exception as exc:
+            status.step("detect", "error", str(exc))
+            status.set(running=False, phase="failed", finished_at=iso_now(), success=False, message=str(exc))
+            append_audit("update.check", False, message=str(exc))
+            log(f"Check failed: {exc}")
+            raise
 
 
 def main() -> int:

@@ -30,15 +30,16 @@ write_status() {
   local fallback_used="${5:-false}"
   local steamcmd_exit_code="${6:-}"
   local steamcmd_detail="${7:-}"
+  local request_id="${8:-${update_request_id:-}}"
   local status_file="${PALWORLD_INSTALL_STATUS_FILE:-${PALWORLD_DIR}/.panel-install-status.json}"
 
   mkdir -p "$(dirname "${status_file}")"
-  python3 - "${status_file}" "${phase}" "${message}" "${success}" "${update_success}" "${fallback_used}" "${steamcmd_exit_code}" "${steamcmd_detail}" <<'PY'
+  python3 - "${status_file}" "${phase}" "${message}" "${success}" "${update_success}" "${fallback_used}" "${steamcmd_exit_code}" "${steamcmd_detail}" "${request_id}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 
-path, phase, message, success, update_success, fallback_used, steamcmd_exit_code, steamcmd_detail = sys.argv[1:9]
+path, phase, message, success, update_success, fallback_used, steamcmd_exit_code, steamcmd_detail, request_id = sys.argv[1:10]
 payload = {
     "phase": phase,
     "message": message,
@@ -53,8 +54,24 @@ if steamcmd_exit_code:
     payload["steamcmd_exit_code"] = int(steamcmd_exit_code)
 if steamcmd_detail:
     payload["steamcmd_detail"] = steamcmd_detail
-with open(path, "w", encoding="utf-8") as fh:
-    json.dump(payload, fh, ensure_ascii=False, indent=2)
+if request_id:
+    payload["request_id"] = request_id
+ import os
+ import tempfile
+ directory = os.path.dirname(path) or "."
+ fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", suffix=".tmp", dir=directory)
+ try:
+     with os.fdopen(fd, "w", encoding="utf-8") as fh:
+         json.dump(payload, fh, ensure_ascii=False, indent=2)
+         fh.write("\n")
+         fh.flush()
+         os.fsync(fh.fileno())
+     os.replace(tmp, path)
+ finally:
+     try:
+         os.unlink(tmp)
+     except FileNotFoundError:
+         pass
 PY
 }
 
@@ -174,6 +191,7 @@ repair_stale_manifest() {
 }
 
 update_mode="normal"
+update_request_id=""
 steamcmd_update_success=""
 steamcmd_fallback_used=false
 steamcmd_exit_code=""
@@ -187,7 +205,20 @@ case "${STEAMCMD_NETWORK_MODE}" in
     ;;
 esac
 if [[ -f "${PALWORLD_UPDATE_REQUEST_FILE}" ]]; then
-  requested_mode="$(tr -d '[:space:]' < "${PALWORLD_UPDATE_REQUEST_FILE}")"
+  readarray -t update_request < <(python3 - "${PALWORLD_UPDATE_REQUEST_FILE}" <<'PY'
+import json
+import sys
+
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    payload = {}
+print(payload.get("mode", ""))
+print(payload.get("request_id", ""))
+PY
+  )
+  requested_mode="${update_request[0]:-}"
+  update_request_id="${update_request[1]:-}"
   rm -f "${PALWORLD_UPDATE_REQUEST_FILE}"
   case "${requested_mode}" in
     update|validate)

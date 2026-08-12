@@ -6,6 +6,7 @@ const state = {
     logAutoRefresh: true,
     loadingAction: false,
     currentConfig: {},
+    configDirty: false,
     configConfirmResolve: null,
     dialogResolve: null,
     lastMetricValues: {},
@@ -20,8 +21,10 @@ const state = {
     auditLoading: false,
     updateStatus: null,
     updateLoading: false,
+    updateLoadPromise: null,
     installStatus: null,
     installLoading: false,
+    installLoadPromise: null,
     modStatus: null,
     mods: [],
     modLoading: false,
@@ -35,7 +38,9 @@ const state = {
     progressStartedAt: 0,
     progressLastError: "",
     activeAbortController: null,
-    uploadMaxBytes: 1024 * 1024 * 1024,
+    saveUploadMaxBytes: 1024 * 1024 * 1024,
+    modUploadMaxBytes: 1024 * 1024 * 1024,
+    requestGenerations: { status: 0, system: 0, log: 0 },
 };
 
 const particles = {
@@ -93,7 +98,7 @@ const configGroups = [
         fields: [
             ["ServerName", "服务器名称", "text"],
             ["ServerDescription", "服务器描述", "text"],
-            ["ServerPassword", "服务器密码", "text"],
+            ["ServerPassword", "服务器密码", "password"],
             ["ServerPlayerMaxNum", "最大玩家数", "number", { step: "1", min: 1, max: 128 }],
             ["GuildPlayerMaxNum", "公会最大人数", "number", { step: "1", min: 1, max: 100 }],
             ["CoopPlayerMaxNum", "合作模式最大玩家数", "number", { step: "1", min: 1, max: 32 }],
@@ -608,6 +613,22 @@ function formatOptional(value, fallback = "-") {
     return value === undefined || value === null || value === "" ? fallback : String(value);
 }
 
+function updateUploadLimit(kind, data) {
+    const specificKey = kind === "save" ? "save_upload_max_bytes" : "mod_upload_max_bytes";
+    const sources = [data, data?.status, data?.limits, data?.upload_limits, data?.status?.limits];
+    const keys = [specificKey, "upload_max_bytes", "max_upload_bytes", "upload_limit_bytes", "max_file_size", "max_content_length"];
+    for (const source of sources) {
+        if (!source || typeof source !== "object") continue;
+        for (const key of keys) {
+            const value = Number(source[key]);
+            if (Number.isFinite(value) && value > 0) {
+                state[kind === "save" ? "saveUploadMaxBytes" : "modUploadMaxBytes"] = value;
+                return;
+            }
+        }
+    }
+}
+
 function flashMetric(id, nextValue) {
     const element = $(`#${id}`);
     if (!element) return;
@@ -639,6 +660,13 @@ function applyPreferences() {
     $("#motionSelect") && ($("#motionSelect").value = state.motion);
     if (particles.canvas) {
         resizeParticles();
+        if (state.motion === "off") {
+            if (particles.raf !== null) cancelAnimationFrame(particles.raf);
+            particles.raf = null;
+            particles.ctx.clearRect(0, 0, particles.width, particles.height);
+        } else if (particles.raf === null && !prefersReducedMotion()) {
+            particles.raf = requestAnimationFrame(animateParticles);
+        }
     }
 }
 
@@ -817,6 +845,10 @@ function drawParticles(time) {
 }
 
 function animateParticles(time = 0) {
+    if (state.motion === "off" || prefersReducedMotion()) {
+        particles.raf = null;
+        return;
+    }
     drawParticles(time);
     particles.raf = requestAnimationFrame(animateParticles);
 }
@@ -841,7 +873,7 @@ function initParticles() {
             particles.ctx.clearRect(0, 0, particles.width, particles.height);
         }
     });
-    animateParticles();
+    if (state.motion !== "off") animateParticles();
 }
 
 function initCursorGlow() {
@@ -977,7 +1009,13 @@ function switchTab(tab) {
         state.tabTransitionTimer = null;
     }, 170);
 
-    if (tab === "config") loadConfig();
+    if (tab === "config") {
+        if (state.configDirty) {
+            setMessage($("#configMsg"), "保留了尚未保存的配置改动。", "warn");
+        } else {
+            loadConfig();
+        }
+    }
     if (tab === "log") loadLog();
     if (tab === "saves") loadSaves();
     if (tab === "mods") loadMods();
@@ -1182,10 +1220,13 @@ function renderSystem(data) {
 }
 
 async function refreshSystem() {
+    const generation = ++state.requestGenerations.system;
     try {
         const data = await api("/api/system");
+        if (generation !== state.requestGenerations.system) return;
         renderSystem(data);
     } catch (error) {
+        if (generation !== state.requestGenerations.system) return;
         $("#systemUpdated").textContent = "机器状态读取失败";
     }
 }
@@ -1235,11 +1276,16 @@ function renderPlayers(players, stateInfo = {}) {
 }
 
 async function refreshAll() {
+    const generation = ++state.requestGenerations.status;
     try {
         const data = await api("/api/status");
+        if (generation !== state.requestGenerations.status) return;
+        updateUploadLimit("save", data);
+        updateUploadLimit("mod", data);
         renderStatus(data);
         refreshSystem();
     } catch (error) {
+        if (generation !== state.requestGenerations.status) return;
         $("#statusBadge").textContent = "连接失败";
         $("#statusBadge").className = "status-pill is-offline";
         updateActionButtons(false);
@@ -1307,12 +1353,15 @@ async function serverAction(action) {
 
 async function loadLog() {
     const log = $("#logContainer");
+    const generation = ++state.requestGenerations.log;
     try {
         const data = await api("/api/log?lines=80");
+        if (generation !== state.requestGenerations.log) return;
         state.rawLogLines = data.lines || [];
         renderLogLines();
         if (state.logAutoScroll) log.scrollTop = log.scrollHeight;
     } catch (error) {
+        if (generation !== state.requestGenerations.log) return;
         state.rawLogLines = [error.message];
         renderLogLines();
     }
@@ -1551,19 +1600,24 @@ function renderUpdateStatus(status = {}) {
     setMessage($("#updateMsg"), status.message || "更新状态已刷新", type);
 }
 
-async function loadUpdateStatus(showLoading = true) {
-    if (state.updateLoading) return;
+function loadUpdateStatus(showLoading = true) {
+    if (state.updateLoadPromise) return state.updateLoadPromise;
     state.updateLoading = true;
     if (showLoading) setMessage($("#updateMsg"), "正在读取更新状态...");
-    try {
-        const data = await api("/api/update/status");
-        renderUpdateStatus(data.status || {});
-    } catch (error) {
-        setMessage($("#updateMsg"), error.message, "error");
-        showToast(error.message, "error");
-    } finally {
-        state.updateLoading = false;
-    }
+    const promise = (async () => {
+        try {
+            const data = await api("/api/update/status");
+            renderUpdateStatus(data.status || {});
+        } catch (error) {
+            setMessage($("#updateMsg"), error.message, "error");
+            showToast(error.message, "error");
+        } finally {
+            state.updateLoading = false;
+            if (state.updateLoadPromise === promise) state.updateLoadPromise = null;
+        }
+    })();
+    state.updateLoadPromise = promise;
+    return promise;
 }
 
 async function checkUpdateNow() {
@@ -1751,19 +1805,24 @@ function renderInstallStatus(status = {}) {
     setMessage($("#installMsg"), status.message || "安装状态已刷新", type);
 }
 
-async function loadInstallStatus(showLoading = true) {
-    if (state.installLoading) return;
+function loadInstallStatus(showLoading = true) {
+    if (state.installLoadPromise) return state.installLoadPromise;
     state.installLoading = true;
     if (showLoading) setMessage($("#installMsg"), "正在读取安装状态...");
-    try {
-        const data = await api("/api/install/status");
-        renderInstallStatus(data.status || {});
-    } catch (error) {
-        setMessage($("#installMsg"), error.message, "error");
-        showToast(error.message, "error");
-    } finally {
-        state.installLoading = false;
-    }
+    const promise = (async () => {
+        try {
+            const data = await api("/api/install/status");
+            renderInstallStatus(data.status || {});
+        } catch (error) {
+            setMessage($("#installMsg"), error.message, "error");
+            showToast(error.message, "error");
+        } finally {
+            state.installLoading = false;
+            if (state.installLoadPromise === promise) state.installLoadPromise = null;
+        }
+    })();
+    state.installLoadPromise = promise;
+    return promise;
 }
 
 async function checkInstallNow() {
@@ -1973,6 +2032,7 @@ async function loadMods(showLoading = true) {
             api("/api/mods/list"),
         ]);
         state.modStatus = statusData.status || {};
+        updateUploadLimit("mod", statusData);
         state.mods = listData.mods || [];
         renderMods();
         if (showLoading) setMessage($("#modMsg"), "MOD 信息已刷新。", "success");
@@ -1997,8 +2057,8 @@ async function uploadMod() {
         return;
     }
 
-    if (file.size > state.uploadMaxBytes) {
-        setMessage($("#modMsg"), `MOD 文件不能超过 ${formatBytes(state.uploadMaxBytes)}。`, "error");
+    if (file.size > state.modUploadMaxBytes) {
+        setMessage($("#modMsg"), `MOD 文件不能超过 ${formatBytes(state.modUploadMaxBytes)}。`, "error");
         showToast("MOD 文件太大", "error");
         input.value = "";
         return;
@@ -2261,6 +2321,10 @@ function syncFieldState(input) {
     }
 }
 
+function updateConfigDirtyState() {
+    state.configDirty = getConfigDiff(collectConfig()).length > 0;
+}
+
 function createField([key, label, type, meta]) {
     const wrapper = document.createElement("div");
     wrapper.className = "field";
@@ -2326,7 +2390,10 @@ function createField([key, label, type, meta]) {
     input.id = `cfg_${key}`;
     input.dataset.key = key;
     wrapper.appendChild(input);
-    input.addEventListener("input", () => syncFieldState(input));
+    input.addEventListener("input", () => {
+        syncFieldState(input);
+        updateConfigDirtyState();
+    });
 
     if (type === "number" && isRateField(key, meta)) {
         const control = document.createElement("div");
@@ -2339,6 +2406,7 @@ function createField([key, label, type, meta]) {
         slider.addEventListener("input", () => {
             input.value = slider.value;
             syncFieldState(input);
+            updateConfigDirtyState();
         });
         const reset = document.createElement("button");
         reset.type = "button";
@@ -2347,6 +2415,7 @@ function createField([key, label, type, meta]) {
         reset.addEventListener("click", () => {
             input.value = stripQuotes(configDefaults[key] ?? "");
             syncFieldState(input);
+            updateConfigDirtyState();
         });
         control.append(slider, reset);
         wrapper.appendChild(control);
@@ -2364,8 +2433,13 @@ function createField([key, label, type, meta]) {
 }
 
 async function loadConfig() {
+    if (state.configDirty) return;
     try {
         const data = await api("/api/config");
+        if (state.configDirty) {
+            setMessage($("#configMsg"), "配置读取完成，但保留了尚未保存的本地改动。", "warn");
+            return;
+        }
         const settings = { ...configDefaults, ...(data.settings || {}) };
         state.currentConfig = {};
         $$("[data-key]").forEach((input) => {
@@ -2374,6 +2448,7 @@ async function loadConfig() {
             state.currentConfig[input.dataset.key] = normalizeSubmitValue(input.dataset.key, value);
             syncFieldState(input);
         });
+        state.configDirty = false;
     } catch (error) {
         setMessage($("#configMsg"), `读取配置失败：${error.message}`, "error");
     }
@@ -2395,6 +2470,7 @@ function getFieldLabel(key) {
 }
 
 function formatDiffValue(key, value) {
+    if (key.toLowerCase().includes("password")) return value ? "********" : "空";
     const text = stringFields.has(key) ? stripQuotes(value) : String(value ?? "");
     return text === "" ? "空" : text;
 }
@@ -2485,14 +2561,21 @@ function validateConfig() {
         const value = Number(input.value);
         const min = input.min === "" ? null : Number(input.min);
         const max = input.max === "" ? null : Number(input.max);
+        const step = input.step === "" || input.step === "any" ? null : Number(input.step);
         const label = input.closest(".field")?.querySelector("label")?.textContent || input.dataset.key;
 
-        if (Number.isNaN(value)) {
+        if (!Number.isFinite(value)) {
             errors.push(`${label} 必须是数字`);
         } else if (min !== null && value < min) {
             errors.push(`${label} 不能低于 ${min}`);
         } else if (max !== null && value > max) {
             errors.push(`${label} 不能高于 ${max}`);
+        } else if (step !== null && Number.isFinite(step) && step > 0) {
+            const base = min ?? 0;
+            const steps = (value - base) / step;
+            if (Math.abs(steps - Math.round(steps)) > 1e-9) {
+                errors.push(step === 1 ? `${label} 必须是整数` : `${label} 必须按 ${step} 递增`);
+            }
         }
     });
     return errors;
@@ -2557,10 +2640,11 @@ async function saveConfig(restart) {
     setMessage($("#configMsg"), restart ? "正在保存配置，并向服务器发送重启指令..." : "正在保存配置...");
     if (configPanel) configPanel.classList.add("is-working");
     try {
+        const changes = Object.fromEntries(diffs.map((diff) => [diff.key, config[diff.key]]));
         const data = await api(restart ? "/api/config/apply_restart" : "/api/config", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(config),
+            body: JSON.stringify(changes),
         });
         if (!data.success) {
             setMessage($("#configMsg"), data.message || "保存失败", "error");
@@ -2579,6 +2663,7 @@ async function saveConfig(restart) {
             restartButton.textContent = "等待服务器恢复...";
             setMessage($("#configMsg"), "配置已保存，服务器正在重启；正在等待状态恢复...");
             state.currentConfig = { ...config };
+            updateConfigDirtyState();
             const restored = await waitForServerAfterRestart(true);
             if (restored) {
                 setProgressStep(2, "done", "服务已恢复");
@@ -2587,6 +2672,7 @@ async function saveConfig(restart) {
             }
         } else {
             state.currentConfig = { ...config };
+            updateConfigDirtyState();
             setMessage($("#configMsg"), "配置已保存。重启 Palworld 后配置才会生效。", "success");
             showToast("配置已保存", "success");
         }
@@ -2617,8 +2703,9 @@ async function waitForServerAfterRestart(updateProgress = false) {
         await new Promise((resolve) => setTimeout(resolve, attempt < 3 ? 3000 : 5000));
 
         try {
+            const generation = ++state.requestGenerations.status;
             const data = await api("/api/status");
-            renderStatus(data);
+            if (generation === state.requestGenerations.status) renderStatus(data);
             if (data.status && data.status.running) {
                 setMessage($("#configMsg"), "配置已保存，服务器重启完成并已恢复运行。", "success");
                 showToast("服务器已恢复运行", "success");
@@ -2652,6 +2739,7 @@ async function loadSaves(showLoading = true) {
             api("/api/saves/status"),
             api("/api/saves/slots"),
         ]);
+        updateUploadLimit("save", statusData);
         state.saveStatus = statusData;
         state.saveSlots = slotsData.slots || [];
         renderSaveStatus();
@@ -2957,8 +3045,8 @@ async function uploadSaveSlot() {
         return;
     }
 
-    if (file.size > state.uploadMaxBytes) {
-        setMessage($("#saveMsg"), `存档包不能超过 ${formatBytes(state.uploadMaxBytes)}。`, "error");
+    if (file.size > state.saveUploadMaxBytes) {
+        setMessage($("#saveMsg"), `存档包不能超过 ${formatBytes(state.saveUploadMaxBytes)}。`, "error");
         showToast("存档包太大", "error");
         input.value = "";
         return;

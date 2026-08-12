@@ -144,6 +144,16 @@ class RconCommandTests(unittest.TestCase):
         server.join()
         self.assertEqual(response, "[RCON Error] Auth failed")
 
+    def test_rejects_wrong_authentication_packet_type(self):
+        def handler(connection):
+            self.assertEqual(read_packet(connection), (1, 3, "secret"))
+            send_packet(connection, 1, 0)
+
+        server = RconServer(handler)
+        response = rcon_command("127.0.0.1", server.port, "secret", "Info", timeout=2)
+        server.join()
+        self.assertIn("unexpected authentication response", response)
+
     def test_rejects_invalid_packet_size(self):
         def handler(connection):
             self.assertEqual(read_packet(connection), (1, 3, "secret"))

@@ -14,7 +14,7 @@ class RestPlayersTests(unittest.TestCase):
         import app
 
     def setUp(self):
-        self.cache_patch = patch.object(app, "_player_response_cache", (0.0, {}))
+        self.cache_patch = patch.object(app, "_player_response_cache", (0.0, False, {}))
         self.cache_patch.start()
         self.addCleanup(self.cache_patch.stop)
 

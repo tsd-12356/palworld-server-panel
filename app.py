@@ -18,12 +18,15 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +37,8 @@ from rcon import execute_rcon_command, rcon_command as send_rcon_command
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("PANEL_SECRET_KEY", os.urandom(24).hex())
-app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("SAVE_UPLOAD_MAX_BYTES", str(1024 * 1024 * 1024)))
+SAVE_UPLOAD_MAX_BYTES = int(os.environ.get("SAVE_UPLOAD_MAX_BYTES", str(1024 * 1024 * 1024)))
+app.config["MAX_CONTENT_LENGTH"] = SAVE_UPLOAD_MAX_BYTES
 
 PALWORLD_DIR = Path(os.environ.get("PALWORLD_DIR", "/home/demo/palworld"))
 PALWORLD_CONFIG = Path(
@@ -45,6 +49,7 @@ PALWORLD_CONFIG = Path(
 )
 DEFAULT_PALWORLD_SETTINGS = Path(os.environ.get("DEFAULT_PALWORLD_SETTINGS", str(PALWORLD_DIR / "DefaultPalWorldSettings.ini")))
 DEPLOYMENT_MANAGED_CONFIG_KEYS = {"PublicPort", "QueryPort", "RCONPort", "RCONEnabled", "AdminPassword"}
+CONFIG_LOCK_PATH = PALWORLD_CONFIG.with_name(f".{PALWORLD_CONFIG.name}.lock")
 PALWORLD_SERVICE = os.environ.get("PALWORLD_SERVICE", "palworld.service")
 PALWORLD_BACKEND = os.environ.get("PALWORLD_BACKEND", "systemd").strip().lower()
 PALWORLD_CONTAINER_NAME = os.environ.get("PALWORLD_CONTAINER_NAME", "palworld-panel-palworld-1")
@@ -62,7 +67,7 @@ PALWORLD_REST_USERNAME = os.environ.get("PALWORLD_REST_USERNAME", "admin")
 PALWORLD_REST_PASSWORD = os.environ.get("PALWORLD_REST_PASSWORD", "") or RCON_PASSWORD
 PALWORLD_REST_TIMEOUT_SECONDS = float(os.environ.get("PALWORLD_REST_TIMEOUT_SECONDS", "5"))
 PLAYER_CACHE_TTL_SECONDS = float(os.environ.get("PLAYER_CACHE_TTL_SECONDS", "8"))
-_player_response_cache: tuple[float, dict[str, Any]] = (0.0, {})
+_player_response_cache: tuple[float, bool, dict[str, Any]] = (0.0, False, {})
 _player_response_lock = threading.Lock()
 
 SYSTEMCTL = os.environ.get("SYSTEMCTL", "/usr/bin/systemctl")
@@ -115,6 +120,8 @@ STRING_FIELDS = {
 }
 UNQUOTED_STRING_FIELDS: set[str] = set()
 SAVE_UPLOAD_MAX_EXTRACTED_BYTES = int(os.environ.get("SAVE_UPLOAD_MAX_EXTRACTED_BYTES", str(2 * 1024 * 1024 * 1024)))
+LOG_STREAM_MAX_SECONDS = int(os.environ.get("LOG_STREAM_MAX_SECONDS", "300"))
+UPDATE_TIMEOUT_SECONDS = int(os.environ.get("PALWORLD_UPDATE_TIMEOUT_SECONDS", "2700"))
 
 NUMERIC_RANGES = {
     "ServerPlayerMaxNum": (1, 128),
@@ -177,6 +184,27 @@ NUMERIC_RANGES = {
     "VoiceChatZeroVolumeDistance": (0, 100000),
     "BuildingNameDisplayCacheTTLSeconds": (0, 3600),
     "RESTAPIPort": (1024, 65535),
+}
+
+INTEGER_CONFIG_KEYS = {
+    "ServerPlayerMaxNum",
+    "GuildPlayerMaxNum",
+    "CoopPlayerMaxNum",
+    "ChatPostLimitPerMinute",
+    "BaseCampMaxNum",
+    "BaseCampWorkerMaxNum",
+    "BaseCampMaxNumInGuild",
+    "DropItemMaxNum",
+    "PhysicsActiveDropItemMaxNum",
+    "DropItemMaxNum_UNKO",
+    "SupplyDropSpan",
+    "MaxBuildingLimitNum",
+    "GuildRejoinCooldownMinutes",
+    "AutoTransferMasterThresholdDays",
+    "MaxGuildsPerFrame",
+    "AdditionalDropItemNumWhenPlayerKillingInPvPMode",
+    "BuildingNameDisplayCacheTTLSeconds",
+    "RESTAPIPort",
 }
 
 FIELD_LABELS = {
@@ -572,6 +600,10 @@ def validate_config_changes(changes: dict[str, Any]) -> list[str]:
                 errors.append(f"{label} 必须是有限数字")
                 continue
 
+            if key in INTEGER_CONFIG_KEYS and not number.is_integer():
+                errors.append(f"{label} 必须是整数")
+                continue
+
             minimum, maximum = NUMERIC_RANGES[key]
             if number < minimum or number > maximum:
                 errors.append(f"{label} 必须在 {minimum} 到 {maximum} 之间")
@@ -594,23 +626,74 @@ def backup_config_file() -> None:
     shutil.copy2(PALWORLD_CONFIG, CONFIG_BACKUP_DIR / f"PalWorldSettings.ini.{stamp}.bak")
 
 
+@contextmanager
+def locked_file(lock_path: Path):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    locked_with = ""
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            if lock_path.stat().st_size == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            locked_with = "msvcrt"
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            locked_with = "fcntl"
+        yield
+    finally:
+        try:
+            handle.seek(0)
+            if locked_with == "msvcrt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            elif locked_with == "fcntl":
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as handle:
+            tmp_name = handle.name
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        if tmp_name:
+            Path(tmp_name).unlink(missing_ok=True)
+
+
 def update_palworld_settings(changes: dict[str, Any]) -> dict[str, str]:
     errors = validate_config_changes(changes)
     if errors:
         raise ValueError("; ".join(errors[:5]))
 
-    current = get_panel_settings()
-    for raw_key, value in changes.items():
-        key = str(raw_key or "").strip()
-        if key and value is not None:
-            normalized = normalize_config_value(key, value)
-            current[key] = serialize_config_value(key, normalized)
+    with locked_file(CONFIG_LOCK_PATH):
+        current = parse_default_palworld_settings()
+        current.update(parse_palworld_settings())
+        for raw_key, value in changes.items():
+            key = str(raw_key or "").strip()
+            if key and value is not None:
+                normalized = normalize_config_value(key, value)
+                current[key] = serialize_config_value(key, normalized)
 
-    backup_config_file()
-    tmp_path = PALWORLD_CONFIG.with_name(f".{PALWORLD_CONFIG.name}.tmp")
-    tmp_path.write_text(build_palworld_settings(current), encoding="utf-8")
-    tmp_path.replace(PALWORLD_CONFIG)
-    return current
+        backup_config_file()
+        atomic_write_text(PALWORLD_CONFIG, build_palworld_settings(current))
+    return {key: value for key, value in current.items() if key not in DEPLOYMENT_MANAGED_CONFIG_KEYS}
 
 
 def get_changed_config_keys(changes: dict[str, Any]) -> list[str]:
@@ -708,6 +791,9 @@ def fetch_latest_manifest() -> str:
 
 
 def run_docker_update_check() -> dict[str, Any]:
+    existing = read_json(UPDATE_STATUS, {})
+    if existing.get("running"):
+        return reconcile_docker_update_status(existing)
     local = parse_steam_manifest()
     latest_manifest = fetch_latest_manifest()
     update_available = bool(latest_manifest and local.get("manifest") and latest_manifest != local["manifest"])
@@ -730,9 +816,60 @@ def run_docker_update_check() -> dict[str, Any]:
     return status
 
 
+def parse_iso_timestamp(value: Any) -> float:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def marker_matches_request(marker: dict[str, Any], update_status: dict[str, Any]) -> bool:
+    request_id = str(update_status.get("request_id") or "")
+    marker_request_id = str(marker.get("request_id") or "")
+    if marker_request_id:
+        return bool(request_id and marker_request_id == request_id)
+    return parse_iso_timestamp(marker.get("updated_at")) >= parse_iso_timestamp(update_status.get("requested_at")) > 0
+
+
+def reconcile_docker_update_status(update_status: dict[str, Any]) -> dict[str, Any]:
+    if not update_status.get("running"):
+        return update_status
+    target = str(update_status.get("target_manifest") or update_status.get("latest_manifest") or "")
+    local = parse_steam_manifest()
+    marker = read_docker_install_marker()
+    marker_current = marker_matches_request(marker, update_status)
+    container_running = docker_container_running()
+    initially_running = bool(update_status.get("initially_running"))
+
+    if target and local.get("manifest") == target and marker_current and marker.get("update_success") is True:
+        if not initially_running and container_running:
+            try:
+                container = get_docker_container()
+                container.stop(timeout=60)
+                container.reload()
+            except Exception as exc:
+                update_status["message"] = f"Update installed, but failed to restore stopped state: {exc}"
+                return update_status
+        update_status.update(running=False, phase="complete", finished_at=iso_now(), success=True, message="SteamCMD update complete; target manifest verified" + ("" if initially_running else "; container restored to stopped state"), local_buildid=local.get("buildid", ""), local_manifest=local.get("manifest", ""), update_available=False)
+        write_json(UPDATE_STATUS, update_status)
+    elif marker_current and (marker.get("phase") == "failed" or marker.get("fallback_used")):
+        update_status.update(running=False, phase="failed", finished_at=iso_now(), success=False, message=marker.get("message") or "SteamCMD update failed")
+        write_json(UPDATE_STATUS, update_status)
+    else:
+        started = parse_iso_timestamp(update_status.get("started_at"))
+        if started and time.time() - started > UPDATE_TIMEOUT_SECONDS + 60:
+            update_status.update(running=False, phase="failed", finished_at=iso_now(), success=False, message="Update worker was lost or timed out before the target manifest was verified")
+            write_json(UPDATE_STATUS, update_status)
+        elif not container_running and not PALWORLD_UPDATE_REQUEST.exists() and marker_current:
+            update_status.update(running=False, phase="failed", finished_at=iso_now(), success=False, message="Update container stopped before the target manifest was installed")
+            write_json(UPDATE_STATUS, update_status)
+    return update_status
+
+
 def read_update_status() -> dict[str, Any]:
     status = read_json(UPDATE_STATUS, {})
     if using_docker_backend():
+        status = reconcile_docker_update_status(status)
         log_tail = tail_text(UPDATE_LOG, 60)
         steamcmd_log_tail = tail_text(DOCKER_STEAMCMD_LOG, 80)
         if steamcmd_log_tail:
@@ -791,63 +928,103 @@ def run_update_check_now() -> tuple[bool, str]:
 
 def start_update_service() -> tuple[bool, str]:
     if using_docker_backend():
-        update_status = read_update_status()
-        if update_status.get("running"):
-            return False, "更新任务正在运行"
-        if not update_status.get("update_available"):
-            return False, "当前没有检测到可用更新，请先点击检查更新"
-
-        expected_manifest = str(update_status.get("latest_manifest") or "")
-        if not expected_manifest:
-            return False, "未获取到目标 Manifest，请先重新检查更新"
-
-        write_json(
-            UPDATE_STATUS,
-            {
+        try:
+            operation = acquire_save_operation_lock("docker-update")
+        except SaveOperationBusy as exc:
+            return False, str(exc)
+        try:
+            update_status = reconcile_docker_update_status(read_json(UPDATE_STATUS, {}))
+            if update_status.get("running"):
+                release_save_operation_lock(operation)
+                return False, "更新任务正在运行"
+            local = parse_steam_manifest()
+            expected_manifest = fetch_latest_manifest()
+            if not expected_manifest or not local.get("manifest"):
+                release_save_operation_lock(operation)
+                return False, "未获取到本地或目标 Manifest"
+            if local.get("manifest") == expected_manifest:
+                update_status.update(running=False, phase="idle", success=True, update_available=False, message="Already up to date")
+                write_json(UPDATE_STATUS, update_status)
+                release_save_operation_lock(operation)
+                return False, "当前已是最新版本"
+            request_id = uuid.uuid4().hex
+            requested_at = iso_now()
+            initially_running = bool(get_docker_game_state().get("container_running"))
+            update_status = {
                 **update_status,
                 "backend": "docker",
                 "running": True,
                 "phase": "running",
-                "started_at": iso_now(),
+                "request_id": request_id,
+                "operation_id": request_id,
+                "requested_at": requested_at,
+                "target_manifest": expected_manifest,
+                "latest_manifest": expected_manifest,
+                "started_at": requested_at,
+                "initially_running": initially_running,
+                "backup_id": "",
+                "recovery": None,
                 "success": None,
-                "message": "Requesting a Palworld update and waiting for the target Steam manifest",
-                "steps": [
-                    {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
-                    {"name": "update", "status": "active", "message": "Requesting SteamCMD to install the target manifest", "time": iso_now()},
-                ],
-            },
-        )
+                "message": "Preparing a consistent backup before requesting the Docker update",
+                "steps": [{"name": "detect", "status": "done", "message": "Fresh target manifest confirmed", "time": requested_at}],
+            }
+            write_json(UPDATE_STATUS, update_status)
+        except Exception:
+            release_save_operation_lock(operation)
+            raise
 
         def run_update() -> None:
             try:
                 started_at = int(time.time())
                 container = get_docker_container()
+                game_state = get_docker_game_state()
+                if game_state.get("ready"):
+                    result = execute_panel_rcon_command("Save")
+                    if not result.success or not result.acknowledged:
+                        raise RuntimeError(result.message or "RCON Save was not acknowledged")
+                    time.sleep(5)
+                    update_status["steps"].append({"name": "save", "status": "done", "message": result.response or result.message or "Save acknowledged", "time": iso_now()})
+                if game_state.get("container_running"):
+                    container.stop(timeout=60)
+                    container.reload()
+                    if container.status == "running":
+                        raise RuntimeError("Docker container did not stop before backup")
+                update_status["steps"].append({"name": "stop", "status": "done", "message": "Container stopped", "time": iso_now()})
+                backup = backup_current_save("before-update")
+                update_status["backup_id"] = backup["id"]
+                update_status["steps"].append({"name": "backup", "status": "done", "message": backup["id"], "time": iso_now()})
+                write_json(UPDATE_STATUS, update_status)
                 PALWORLD_UPDATE_REQUEST.parent.mkdir(parents=True, exist_ok=True)
-                PALWORLD_UPDATE_REQUEST.write_text("update\n", encoding="utf-8")
-                container.restart(timeout=120)
-                deadline = time.monotonic() + int(os.environ.get("PALWORLD_UPDATE_TIMEOUT_SECONDS", "2700"))
+                write_json(PALWORLD_UPDATE_REQUEST, {"mode": "update", "request_id": request_id, "requested_at": requested_at, "target_manifest": expected_manifest})
+                container.start()
+                deadline = time.monotonic() + UPDATE_TIMEOUT_SECONDS
 
                 while True:
                     local = parse_steam_manifest()
                     game_state = get_docker_game_state()
-                    if local.get("manifest") == expected_manifest and game_state.get("ready"):
+                    marker = read_docker_install_marker()
+                    marker_current = marker_matches_request(marker, update_status)
+                    installed = local.get("manifest") == expected_manifest and marker_current and marker.get("update_success") is True
+                    if installed and (game_state.get("ready") or not initially_running):
+                        if not initially_running and game_state.get("container_running"):
+                            container.stop(timeout=60)
                         write_json(
                             UPDATE_STATUS,
                             {
-                                **read_update_status(),
+                                **update_status,
                                 "backend": "docker",
                                 "running": False,
                                 "phase": "complete",
                                 "finished_at": iso_now(),
                                 "success": True,
-                                "message": "SteamCMD update complete; target manifest verified and Palworld is ready",
+                                "message": "SteamCMD update complete; target manifest verified" + (" and Palworld is ready" if initially_running else "; container restored to stopped state"),
                                 "local_buildid": local.get("buildid", ""),
                                 "local_manifest": local.get("manifest", ""),
                                 "update_available": False,
                                 "steps": [
                                     {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
                                     {"name": "update", "status": "done", "message": f"Manifest {expected_manifest} installed", "time": iso_now()},
-                                    {"name": "start", "status": "done", "message": "Palworld server ready", "time": iso_now()},
+                                    {"name": "start", "status": "done", "message": "Palworld server ready" if initially_running else "Update required temporary startup; container stopped again", "time": iso_now()},
                                     {"name": "complete", "status": "done", "message": "Target manifest verified", "time": iso_now()},
                                 ],
                             },
@@ -856,8 +1033,7 @@ def start_update_service() -> tuple[bool, str]:
 
                     raw_logs = container.logs(since=started_at, tail=160, stdout=True, stderr=True)
                     log_text = raw_logs.decode("utf-8", errors="replace") if isinstance(raw_logs, bytes) else str(raw_logs)
-                    marker = read_docker_install_marker()
-                    if marker.get("phase") == "failed" or marker.get("fallback_used"):
+                    if marker_current and (marker.get("phase") == "failed" or marker.get("fallback_used")):
                         detail = str(marker.get("steamcmd_detail") or get_steamcmd_failure_detail())
                         detail_suffix = f" Detail: {detail}" if detail else ""
                         raise RuntimeError(
@@ -872,7 +1048,7 @@ def start_update_service() -> tuple[bool, str]:
                     write_json(
                         UPDATE_STATUS,
                         {
-                            **read_update_status(),
+                            **update_status,
                             "backend": "docker",
                             "running": True,
                             "phase": "running",
@@ -889,17 +1065,23 @@ def start_update_service() -> tuple[bool, str]:
                     )
                     time.sleep(10)
             except Exception as exc:
-                status = read_update_status()
+                recovery = {"attempted": False, "success": False, "message": "not required"}
+                if initially_running:
+                    recovery["attempted"] = True
+                    recovered, recovery_message = _service_action_unlocked("start")
+                    recovery.update(success=recovered, message=recovery_message)
+                current_status = read_json(UPDATE_STATUS, update_status)
                 write_json(
                     UPDATE_STATUS,
                     {
-                        **status,
+                        **current_status,
                         "backend": "docker",
                         "running": False,
                         "phase": "failed",
                         "finished_at": iso_now(),
                         "success": False,
                         "message": str(exc),
+                        "recovery": recovery,
                         "log_tail": docker_container_logs(120),
                         "steps": [
                             {"name": "detect", "status": "done", "message": "Update available", "time": iso_now()},
@@ -908,6 +1090,8 @@ def start_update_service() -> tuple[bool, str]:
                         ],
                     },
                 )
+            finally:
+                release_save_operation_lock(operation)
 
         threading.Thread(target=run_update, name="palworld-update", daemon=True).start()
         return True, "更新任务已在后台启动；面板会在目标 Manifest 验证后才显示完成"
@@ -1024,6 +1208,14 @@ class SaveOperationBusy(RuntimeError):
 
 @contextmanager
 def save_operation_lock():
+    operation = acquire_save_operation_lock("panel-operation")
+    try:
+        yield
+    finally:
+        release_save_operation_lock(operation)
+
+
+def acquire_save_operation_lock(owner: str):
     ensure_save_dirs()
     handle = SAVE_LOCK_PATH.open("a+", encoding="utf-8")
     locked_with = ""
@@ -1036,7 +1228,7 @@ def save_operation_lock():
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                 locked_with = "msvcrt"
             except OSError as exc:
-                raise SaveOperationBusy("已有存档操作正在进行，请等待完成后再试") from exc
+                raise SaveOperationBusy("已有存档、更新或服务操作正在进行，请等待完成后再试") from exc
         else:
             import fcntl
 
@@ -1044,13 +1236,20 @@ def save_operation_lock():
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 locked_with = "fcntl"
             except BlockingIOError as exc:
-                raise SaveOperationBusy("已有存档操作正在进行，请等待完成后再试") from exc
+                raise SaveOperationBusy("已有存档、更新或服务操作正在进行，请等待完成后再试") from exc
         handle.seek(0)
         handle.truncate()
-        handle.write(f"{os.getpid()} {iso_now()}\n")
+        handle.write(f"{owner} {os.getpid()} {iso_now()}\n")
         handle.flush()
-        yield
-    finally:
+        return handle, locked_with
+    except Exception:
+        handle.close()
+        raise
+
+
+def release_save_operation_lock(operation) -> None:
+    handle, locked_with = operation
+    try:
         try:
             if locked_with == "msvcrt":
                 import msvcrt
@@ -1064,6 +1263,8 @@ def save_operation_lock():
         except Exception:
             pass
         handle.close()
+    except Exception:
+        pass
 
 
 def path_within(path: Path, root: Path) -> bool:
@@ -1177,10 +1378,9 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with locked_file(lock_path):
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 def find_world_dirs(root: Path) -> list[Path]:
@@ -1625,15 +1825,13 @@ def upload_mod(file_storage, name: str = "", notes: str = "") -> dict[str, Any]:
     upload_dir = MOD_LIBRARY_ROOT / "imports" / upload_id
     upload_dir.mkdir(parents=True, exist_ok=False)
     upload_path = upload_dir / filename
-    file_storage.save(upload_path)
-    if upload_path.stat().st_size <= 0:
-        shutil.rmtree(upload_dir, ignore_errors=True)
-        raise ValueError("MOD 文件不能为空")
-    if upload_path.stat().st_size > MOD_UPLOAD_MAX_BYTES:
-        shutil.rmtree(upload_dir, ignore_errors=True)
-        raise ValueError("MOD 文件太大")
-
     try:
+        file_storage.save(upload_path)
+        if upload_path.stat().st_size <= 0:
+            raise ValueError("MOD 文件不能为空")
+        if upload_path.stat().st_size > MOD_UPLOAD_MAX_BYTES:
+            raise ValueError("MOD 文件太大")
+
         if suffix == ".zip":
             extract_dir = upload_dir / "extracted"
             extract_dir.mkdir()
@@ -1668,11 +1866,9 @@ def upload_mod(file_storage, name: str = "", notes: str = "") -> dict[str, Any]:
                 "needs_restart": True,
             }
             write_mod_meta(mod_id, mod)
-        mod["upload_path"] = str(upload_dir)
         return mod
-    except Exception:
+    finally:
         shutil.rmtree(upload_dir, ignore_errors=True)
-        raise
 
 
 def set_mod_enabled(mod_id: str, enabled: bool, allow_official: bool = False) -> dict[str, Any]:
@@ -1819,7 +2015,7 @@ def restart_for_mods() -> dict[str, Any]:
         step("save", True, "server is not running; skip RCON save")
 
     if container_running or was_running:
-        success, message = service_action("stop")
+        success, message = _service_action_unlocked("stop")
         step("stop", success, message)
         if not success or not wait_for_service_state(False, timeout=90):
             raise RuntimeError("停止服务器失败，已取消应用 MOD")
@@ -1829,12 +2025,15 @@ def restart_for_mods() -> dict[str, Any]:
     backup = backup_current_save("before-mod-restart")
     step("backup", True, backup["id"])
 
-    success, message = service_action("start")
-    step("restart", success, message)
-    if not success:
-        raise RuntimeError(message)
-    restored = wait_for_service_state(True, timeout=90)
-    step("status", restored, "server running" if restored else "server did not report running in time")
+    if was_running:
+        success, message = _service_action_unlocked("start")
+        step("restart", success, message)
+        if not success:
+            raise RuntimeError(message)
+        restored = wait_for_service_state(True, timeout=90)
+        step("status", restored, "server running" if restored else "server did not report running in time")
+    else:
+        step("restart", True, "server was stopped; leaving it stopped")
     return {"backup": backup, "steps": steps, "running": get_server_status()["running"]}
 
 
@@ -1996,19 +2195,19 @@ def upload_save_slot(file_storage, name: str, notes: str = "", slot_id: str | No
     upload_dir = SAVE_IMPORT_DIR / upload_id
     upload_dir.mkdir(parents=True, exist_ok=False)
     zip_path = upload_dir / "upload.zip"
-    file_storage.save(zip_path)
-
-    extract_dir = upload_dir / "extracted"
-    extract_dir.mkdir()
     try:
+        file_storage.save(zip_path)
+        if zip_path.stat().st_size > SAVE_UPLOAD_MAX_BYTES:
+            raise ValueError("存档文件太大")
+
+        extract_dir = upload_dir / "extracted"
+        extract_dir.mkdir()
         safe_extract_zip(zip_path, extract_dir)
         payload_root = uploaded_save_payload_root(extract_dir)
         slot = import_slot(str(payload_root), name=name, notes=notes, slot_id=slot_id)
-        slot["upload_path"] = str(upload_dir)
         return slot
-    except Exception:
+    finally:
         shutil.rmtree(upload_dir, ignore_errors=True)
-        raise
 
 
 def backup_current_save(reason: str = "manual") -> dict[str, Any]:
@@ -2069,7 +2268,7 @@ def switch_save_slot(slot_id: str) -> dict[str, Any]:
     original_game_user = GAME_USER_SETTINGS.read_text(encoding="utf-8", errors="replace") if GAME_USER_SETTINGS.exists() else None
     was_running = get_server_status()["running"]
     if was_running:
-        success, message = service_action("stop")
+        success, message = _service_action_unlocked("stop")
         step("stop", success, message)
         if not success or not wait_for_service_state(False):
             raise RuntimeError("停止服务器失败，已取消切换")
@@ -2091,7 +2290,7 @@ def switch_save_slot(slot_id: str) -> dict[str, Any]:
         try:
             current_status = get_server_status()
             if current_status.get("container_running"):
-                service_action("stop")
+                _service_action_unlocked("stop")
                 wait_for_service_state(False, timeout=60)
             remove_children(ACTIVE_SAVEGAMES_DIR)
             if backup:
@@ -2106,7 +2305,7 @@ def switch_save_slot(slot_id: str) -> dict[str, Any]:
                 tmp.replace(GAME_USER_SETTINGS)
             fix_save_ownership()
             if was_running:
-                service_action("start")
+                _service_action_unlocked("start")
             step("rollback", True, "已回滚到切换前存档")
         except Exception as rollback_exc:
             step("rollback", False, str(rollback_exc))
@@ -2124,14 +2323,17 @@ def switch_save_slot(slot_id: str) -> dict[str, Any]:
         step("switch", True, world_id)
         step("permissions", True, "权限已修复")
 
-        success, message = service_action("start")
-        step("start", success, message)
-        if not success:
-            raise RuntimeError(message)
-        restored = wait_for_service_state(True, timeout=90)
-        step("status", restored, "server running" if restored else "server did not report running in time")
-        if not restored:
-            raise RuntimeError("服务器启动后未在限定时间内恢复运行")
+        if was_running:
+            success, message = _service_action_unlocked("start")
+            step("start", success, message)
+            if not success:
+                raise RuntimeError(message)
+            restored = wait_for_service_state(True, timeout=90)
+            step("status", restored, "server running" if restored else "server did not report running in time")
+            if not restored:
+                raise RuntimeError("服务器启动后未在限定时间内恢复运行")
+        else:
+            step("start", True, "server was stopped; leaving it stopped")
     except Exception as exc:
         rollback_after_failure(exc)
         raise RuntimeError(f"{exc}; 已回滚到切换前存档") from exc
@@ -2312,31 +2514,36 @@ def get_rest_players() -> tuple[list[dict[str, str]], str]:
 def get_online_players(player_list_enabled: bool) -> dict[str, Any]:
     global _player_response_cache
     with _player_response_lock:
-        cached_at, cached_result = _player_response_cache
-        if time.monotonic() - cached_at < PLAYER_CACHE_TTL_SECONDS:
-            return cached_result
+        if len(_player_response_cache) == 3:
+            cached_at, cached_policy, cached_result = _player_response_cache
+        else:
+            cached_at, cached_result = _player_response_cache
+            cached_policy = None
+        if cached_policy == player_list_enabled and time.monotonic() - cached_at < PLAYER_CACHE_TTL_SECONDS:
+            return dict(cached_result)
 
-        result: dict[str, Any] = {
-            "players": [],
-            "source": "none",
-            "query_ok": False,
-            "error": "disabled",
-            "fallback_used": False,
-        }
-        try:
-            players, source = get_rest_players()
-            result.update({"players": players, "source": source, "query_ok": True, "error": ""})
-        except RuntimeError as rest_error:
-            result["error"] = str(rest_error)
-            if player_list_enabled:
-                response = rcon_command("ShowPlayers")
-                if not response.startswith("[RCON Error]"):
-                    result.update({"players": parse_players(response), "source": "rcon", "query_ok": True, "error": "", "fallback_used": True})
-                else:
-                    result["error"] = "rcon_failed"
+    result: dict[str, Any] = {
+        "players": [],
+        "source": "none",
+        "query_ok": False,
+        "error": "disabled",
+        "fallback_used": False,
+    }
+    try:
+        players, source = get_rest_players()
+        result.update({"players": players, "source": source, "query_ok": True, "error": ""})
+    except RuntimeError as rest_error:
+        result["error"] = str(rest_error)
+        if player_list_enabled:
+            response = rcon_command("ShowPlayers")
+            if not response.startswith("[RCON Error]"):
+                result.update({"players": parse_players(response), "source": "rcon", "query_ok": True, "error": "", "fallback_used": True})
+            else:
+                result["error"] = "rcon_failed"
 
-        _player_response_cache = (time.monotonic(), result)
-        return result
+    with _player_response_lock:
+        _player_response_cache = (time.monotonic(), player_list_enabled, result)
+    return dict(result)
 
 
 def get_game_version() -> str:
@@ -2455,19 +2662,24 @@ def get_server_log(lines: int = 80) -> list[str]:
     return out.splitlines() or ["No log entries available"]
 
 
-def get_server_log_stream():
-    sent = set()
-    while True:
-        for line in get_server_log(30):
-            token = hash(line)
-            if token not in sent:
-                sent.add(token)
-                yield f"data: {line}\n\n"
+def get_server_log_stream(max_seconds: int | None = None):
+    previous: list[str] = []
+    deadline = time.monotonic() + (LOG_STREAM_MAX_SECONDS if max_seconds is None else max(0, max_seconds))
+    while time.monotonic() < deadline:
+        current = get_server_log(100)[-100:]
+        overlap = 0
+        for size in range(min(len(previous), len(current)), 0, -1):
+            if previous[-size:] == current[:size]:
+                overlap = size
+                break
+        for line in current[overlap:]:
+            yield f"data: {line}\n\n"
+        previous = current
         yield "data: \n\n"
         time.sleep(3)
 
 
-def service_action(action: str) -> tuple[bool, str]:
+def _service_action_unlocked(action: str) -> tuple[bool, str]:
     if action not in {"start", "stop", "restart"}:
         return False, "Unsupported action"
 
@@ -2507,6 +2719,14 @@ def service_action(action: str) -> tuple[bool, str]:
     return False, err or f"systemctl {action} exited with {code}"
 
 
+def service_action(action: str) -> tuple[bool, str]:
+    try:
+        with save_operation_lock():
+            return _service_action_unlocked(action)
+    except SaveOperationBusy as exc:
+        return False, str(exc)
+
+
 @app.route("/")
 def index():
     return render_template("index.html", app_version=APP_VERSION)
@@ -2538,7 +2758,15 @@ def api_status():
         "max_players": "N/A",
         "exp_rate": "N/A",
     }
-    return jsonify({"status": status, "info": get_server_info() if status["running"] else offline_info})
+    return jsonify({
+        "status": status,
+        "info": get_server_info() if status["running"] else offline_info,
+        "upload_limits": {
+            "save_upload_max_bytes": SAVE_UPLOAD_MAX_BYTES,
+            "save_upload_max_extracted_bytes": SAVE_UPLOAD_MAX_EXTRACTED_BYTES,
+            "mod_upload_max_bytes": MOD_UPLOAD_MAX_BYTES,
+        },
+    })
 
 
 @app.route("/api/system")
@@ -2803,7 +3031,8 @@ def api_saves_switch():
             backup_id=(result.get("backup") or {}).get("id"),
             running=result.get("running"),
         )
-        return jsonify({"success": True, "message": "存档切换完成，服务器已启动", **result})
+        message = "存档切换完成，服务器已启动" if result.get("running") else "存档切换完成，服务器保持停止"
+        return jsonify({"success": True, "message": message, **result})
     except SaveOperationBusy as exc:
         audit_event("saves.switch", False, slot_id=slot_id, message=str(exc))
         return jsonify({"success": False, "message": str(exc)}), 409
@@ -2961,7 +3190,8 @@ def api_mods_apply_restart():
             backup_id=(result.get("backup") or {}).get("id"),
             running=result.get("running"),
         )
-        return jsonify({"success": True, "message": "服务器已重启，MOD 变更已应用", **result})
+        message = "服务器已重启，MOD 变更已应用" if result.get("running") else "MOD 变更已应用，服务器保持停止"
+        return jsonify({"success": True, "message": message, **result})
     except SaveOperationBusy as exc:
         audit_event("mods.apply_restart", False, message=str(exc))
         return jsonify({"success": False, "message": str(exc)}), 409
@@ -2982,9 +3212,13 @@ def api_update_config():
         return jsonify({"success": False, "message": "No data provided"}), 400
     changed_keys = get_changed_config_keys(data)
     try:
-        updated = update_palworld_settings(data)
+        with save_operation_lock():
+            updated = update_palworld_settings(data)
         audit_event("config.save", True, changed_keys=changed_keys)
         return jsonify({"success": True, "settings": updated})
+    except SaveOperationBusy as exc:
+        audit_event("config.save", False, changed_keys=changed_keys, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
     except ValueError as exc:
         audit_event("config.save", False, changed_keys=changed_keys, message=str(exc))
         return jsonify({"success": False, "message": str(exc)}), 400
@@ -3000,10 +3234,14 @@ def api_apply_config_restart():
         return jsonify({"success": False, "message": "No data provided"}), 400
     changed_keys = get_changed_config_keys(data)
     try:
-        updated = update_palworld_settings(data)
-        success, message = service_action("restart")
+        with save_operation_lock():
+            updated = update_palworld_settings(data)
+            success, message = _service_action_unlocked("restart")
         audit_event("config.save_restart", success, changed_keys=changed_keys, message=message)
-        return jsonify({"success": success, "settings": updated, "message": message})
+        return jsonify({"success": success, "settings": updated, "message": message}), (200 if success else 502)
+    except SaveOperationBusy as exc:
+        audit_event("config.save_restart", False, changed_keys=changed_keys, message=str(exc))
+        return jsonify({"success": False, "message": str(exc)}), 409
     except ValueError as exc:
         audit_event("config.save_restart", False, changed_keys=changed_keys, message=str(exc))
         return jsonify({"success": False, "message": str(exc)}), 400

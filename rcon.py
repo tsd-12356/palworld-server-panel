@@ -8,6 +8,7 @@ import struct
 import time
 
 AUTH_PACKET_TYPE = 3
+AUTH_RESPONSE_TYPE = 2
 COMMAND_PACKET_TYPE = 2
 AUTH_REQUEST_ID = 1
 COMMAND_REQUEST_ID = 2
@@ -81,10 +82,10 @@ def execute_rcon_command(
                 return packet_id, packet_type, data[8:-2].decode("utf-8", errors="replace")
 
             send_packet(AUTH_REQUEST_ID, AUTH_PACKET_TYPE, password)
-            packet_id, _, _ = recv_packet()
+            packet_id, packet_type, _ = recv_packet()
             if packet_id == -1:
                 return RconResult(False, False, message="Auth failed")
-            if packet_id != AUTH_REQUEST_ID:
+            if packet_id != AUTH_REQUEST_ID or packet_type != AUTH_RESPONSE_TYPE:
                 raise RuntimeError("unexpected authentication response")
 
             send_packet(COMMAND_REQUEST_ID, COMMAND_PACKET_TYPE, command)
@@ -109,10 +110,11 @@ def execute_rcon_command(
                         break
                     raise
 
-                if packet_id in {COMMAND_REQUEST_ID, PALWORLD_RESPONSE_ID}:
-                    acknowledged = True
-                    if body.strip():
-                        responses.append(body.strip())
+                if packet_id not in {COMMAND_REQUEST_ID, PALWORLD_RESPONSE_ID}:
+                    raise RuntimeError("unexpected command response packet")
+                acknowledged = True
+                if body.strip():
+                    responses.append(body.strip())
                 first_response = False
 
             if not acknowledged:
